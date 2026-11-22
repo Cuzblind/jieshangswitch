@@ -807,44 +807,46 @@ function DesktopShell() {
                     <Card
                       aria-label="今日用量概览"
                       role="region"
-                      className="flex flex-wrap items-center justify-between gap-3 rounded-xl px-4 py-3"
+                      className="rounded-xl px-4 py-3"
                     >
-                      <div className="flex flex-wrap items-center gap-x-5 gap-y-1.5">
-                        <span
-                          className={cn(typeClass("caption"), "inline-flex items-center gap-1.5 text-muted-foreground")}
-                          style={{ fontVariationSettings: fontWeights.semibold }}
+                      <div className="flex w-full flex-wrap items-center justify-between gap-3">
+                        <div className="flex flex-wrap items-center gap-x-5 gap-y-1.5">
+                          <span
+                            className={cn(typeClass("caption"), "inline-flex items-center gap-1.5 text-muted-foreground")}
+                            style={{ fontVariationSettings: fontWeights.semibold }}
+                          >
+                            <BarChart3 size={14} aria-hidden="true" />
+                            近 24 小时用量
+                          </span>
+                          <span className={cn(typeClass("caption"), "tabular-nums text-foreground")}>
+                            花费{" "}
+                            <strong style={{ fontVariationSettings: fontWeights.semibold }}>
+                              ¥{state?.today?.costCny ?? "0.00"}
+                            </strong>
+                          </span>
+                          <span className={cn(typeClass("caption"), "tabular-nums text-foreground")}>
+                            请求{" "}
+                            <strong style={{ fontVariationSettings: fontWeights.semibold }}>
+                              {(state?.today?.requests ?? 0).toLocaleString("zh-CN")}
+                            </strong>{" "}
+                            次
+                          </span>
+                          <span className={cn(typeClass("caption"), "tabular-nums text-foreground")}>
+                            Tokens{" "}
+                            <strong style={{ fontVariationSettings: fontWeights.semibold }}>
+                              {formatCompactTokens(state?.today?.tokens ?? 0)}
+                            </strong>
+                          </span>
+                        </div>
+                        <Button
+                          variant="ghost"
+                          size="compact"
+                          trailingIcon={ChevronRight}
+                          onClick={() => go("usage")}
                         >
-                          <BarChart3 size={14} aria-hidden="true" />
-                          近 24 小时用量
-                        </span>
-                        <span className={cn(typeClass("caption"), "tabular-nums text-foreground")}>
-                          花费{" "}
-                          <strong style={{ fontVariationSettings: fontWeights.semibold }}>
-                            ¥{state?.today?.costCny ?? "0.00"}
-                          </strong>
-                        </span>
-                        <span className={cn(typeClass("caption"), "tabular-nums text-foreground")}>
-                          请求{" "}
-                          <strong style={{ fontVariationSettings: fontWeights.semibold }}>
-                            {(state?.today?.requests ?? 0).toLocaleString("zh-CN")}
-                          </strong>{" "}
-                          次
-                        </span>
-                        <span className={cn(typeClass("caption"), "tabular-nums text-foreground")}>
-                          Tokens{" "}
-                          <strong style={{ fontVariationSettings: fontWeights.semibold }}>
-                            {formatCompactTokens(state?.today?.tokens ?? 0)}
-                          </strong>
-                        </span>
+                          查看全部日志
+                        </Button>
                       </div>
-                      <Button
-                        variant="ghost"
-                        size="compact"
-                        trailingIcon={ChevronRight}
-                        onClick={() => go("usage")}
-                      >
-                        查看全部日志
-                      </Button>
                     </Card>
                   </Elevated>
                 )}

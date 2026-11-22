@@ -105,7 +105,8 @@ function buildHeatmapWeeks(days: UsageHeatmapDay[]): {
       }
       if (dow === 0) {
         const m = cursor.getMonth();
-        if (m !== lastMonth) {
+        const prevMarker = monthMarkers[monthMarkers.length - 1];
+        if (m !== lastMonth && (!prevMarker || weekIndex - prevMarker.weekIndex >= 3)) {
           monthMarkers.push({ weekIndex, label: `${m + 1}月` });
           lastMonth = m;
         }
@@ -127,7 +128,7 @@ function buildHeatmapWeeks(days: UsageHeatmapDay[]): {
 }
 
 const HEATMAP_LEVEL_CLASS: Record<0 | 1 | 2 | 3 | 4, string> = {
-  0: "bg-surface-3",
+  0: "bg-surface-3 ring-1 ring-inset ring-border/60",
   1: "bg-primary/25",
   2: "bg-primary/50",
   3: "bg-primary/75",
