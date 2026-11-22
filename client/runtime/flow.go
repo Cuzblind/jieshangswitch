@@ -275,6 +275,12 @@ func (a *App) syncDesktopCatalog(agent, secret string) {
 	if err != nil || cat == nil {
 		return
 	}
+	a.mu.Lock()
+	if a.catalogs == nil {
+		a.catalogs = make(map[string]*DesktopCatalogPayload)
+	}
+	a.catalogs[agent] = cat
+	a.mu.Unlock()
 	switch agent {
 	case "claude":
 		_ = configureDesktopGUIWithCatalog(agent, a.origin, secret, cat)
@@ -525,10 +531,19 @@ func (a *App) fetchBalanceAndTier(secret string) (*Balance, string, []TierOption
 		AccountDisabled bool `json:"account_disabled"`
 		Message         string
 		Data            struct {
-			BalanceCNY json.RawMessage `json:"balance_cny"`
-			Low        bool            `json:"balance_low"`
-			Tier       string          `json:"tier"`
-			Tiers      []TierOption    `json:"tiers"`
+			BalanceCNY    json.RawMessage `json:"balance_cny"`
+			Low           bool            `json:"balance_low"`
+			Tier          string          `json:"tier"`
+			Tiers         []TierOption    `json:"tiers"`
+			AccountLabel  string          `json:"account_label"`
+			Workspace     *struct {
+				Kind   string `json:"kind"`
+				Label  string `json:"label"`
+				TeamID int    `json:"team_id"`
+			} `json:"workspace"`
+			TodayCostCNY  string `json:"today_cost_cny"`
+			TodayRequests int    `json:"today_requests"`
+			TodayTokens   int64  `json:"today_tokens"`
 		}
 	}
 	decErr := json.NewDecoder(io.LimitReader(resp.Body, 1<<16)).Decode(&out)
@@ -549,12 +564,150 @@ func (a *App) fetchBalanceAndTier(secret string) (*Balance, string, []TierOption
 	case resp.StatusCode != http.StatusOK || decErr != nil || !out.Success:
 		return nil, "", nil, connNetwork
 	}
+	a.mu.Lock()
+	if strings.TrimSpace(out.Data.AccountLabel) != "" {
+		a.accountLabel = strings.TrimSpace(out.Data.AccountLabel)
+	}
+	if out.Data.Workspace != nil && strings.TrimSpace(out.Data.Workspace.Label) != "" {
+		a.workspace = &WorkspaceInfo{
+			Kind:   strings.TrimSpace(out.Data.Workspace.Kind),
+			Label:  strings.TrimSpace(out.Data.Workspace.Label),
+			TeamID: out.Data.Workspace.TeamID,
+		}
+	}
+	if strings.TrimSpace(out.Data.TodayCostCNY) != "" || out.Data.TodayRequests > 0 || out.Data.TodayTokens > 0 {
+		cost := strings.TrimSpace(out.Data.TodayCostCNY)
+		if cost == "" {
+			cost = "0.00"
+		}
+		a.today = &TodayUsageSummary{
+			CostCNY:  cost,
+			Requests: out.Data.TodayRequests,
+			Tokens:   out.Data.TodayTokens,
+		}
+	}
+	a.mu.Unlock()
 	s := strings.Trim(string(out.Data.BalanceCNY), `"`)
 	f, err := strconv.ParseFloat(s, 64)
 	if err != nil {
 		return nil, out.Data.Tier, out.Data.Tiers, connOK
 	}
 	return balanceView(f, out.Data.Low), out.Data.Tier, out.Data.Tiers, connOK
+}
+
+func (a *App) connectedSecret(preferredAgent string) string {
+	order := []string{"claude", "codex"}
+	if preferredAgent == "codex" {
+		order = []string{"codex", "claude"}
+	}
+	for _, ag := range order {
+		if secret, ok := a.env.Configured(ag, a.origin); ok && strings.TrimSpace(secret) != "" {
+			return secret
+		}
+	}
+	return ""
+}
+
+func normalizeUsageRange(raw string) string {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "7d", "30d", "90d":
+		return strings.ToLower(strings.TrimSpace(raw))
+	default:
+		return "24h"
+	}
+}
+
+// fetchUsage loads the desktop Usage & Logs dashboard snapshot from /api/install/usage.
+func (a *App) fetchUsage(rangeKey string) (*UsageSnapshot, error) {
+	rangeKey = normalizeUsageRange(rangeKey)
+	secret := a.connectedSecret("")
+	if secret == "" {
+		a.mu.Lock()
+		a.usage = nil
+		a.mu.Unlock()
+		return nil, nil
+	}
+	req, _ := http.NewRequest(http.MethodGet, a.origin+"/api/install/usage?range="+rangeKey, nil)
+	req.Header.Set("Authorization", "Bearer "+secret)
+	resp, err := a.env.HTTP.Do(req)
+	if err != nil {
+		return nil, errors.New("暂时连不上服务器，没能读取用量记录")
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+		return nil, errors.New("连接凭证已失效，请回首页重新接上后再看用量")
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, errors.New("暂时读不到用量记录，请稍后再试")
+	}
+	var out struct {
+		Success bool `json:"success"`
+		Data    struct {
+			Range            string `json:"range"`
+			CostCNY          string `json:"cost_cny"`
+			Requests         int    `json:"requests"`
+			Tokens           int64  `json:"tokens"`
+			PromptTokens     int64  `json:"prompt_tokens"`
+			CompletionTokens int64  `json:"completion_tokens"`
+			Heatmap          []struct {
+				Date     string `json:"date"`
+				Requests int    `json:"requests"`
+				Tokens   int64  `json:"tokens"`
+				CostCNY  string `json:"cost_cny"`
+			} `json:"heatmap"`
+			Logs []struct {
+				ID               int    `json:"id"`
+				CreatedAt        int64  `json:"created_at"`
+				Model            string `json:"model"`
+				PromptTokens     int    `json:"prompt_tokens"`
+				CompletionTokens int    `json:"completion_tokens"`
+				CostCNY          string `json:"cost_cny"`
+				UseTimeMs        int    `json:"use_time_ms"`
+			} `json:"logs"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&out); err != nil || !out.Success {
+		return nil, errors.New("用量数据格式异常，请稍后再试")
+	}
+	heatmap := make([]UsageHeatmapDay, 0, len(out.Data.Heatmap))
+	for _, h := range out.Data.Heatmap {
+		heatmap = append(heatmap, UsageHeatmapDay{
+			Date:     h.Date,
+			Requests: h.Requests,
+			Tokens:   h.Tokens,
+			CostCNY:  h.CostCNY,
+		})
+	}
+	logs := make([]UsageLogRow, 0, len(out.Data.Logs))
+	for _, l := range out.Data.Logs {
+		logs = append(logs, UsageLogRow{
+			ID:               l.ID,
+			CreatedAt:        l.CreatedAt,
+			Model:            l.Model,
+			PromptTokens:     l.PromptTokens,
+			CompletionTokens: l.CompletionTokens,
+			CostCNY:          l.CostCNY,
+			UseTimeMs:        l.UseTimeMs,
+		})
+	}
+	cost := strings.TrimSpace(out.Data.CostCNY)
+	if cost == "" {
+		cost = "0.00"
+	}
+	snap := &UsageSnapshot{
+		Range:            normalizeUsageRange(out.Data.Range),
+		CostCNY:          cost,
+		Requests:         out.Data.Requests,
+		Tokens:           out.Data.Tokens,
+		PromptTokens:     out.Data.PromptTokens,
+		CompletionTokens: out.Data.CompletionTokens,
+		Heatmap:          heatmap,
+		Logs:             logs,
+	}
+	a.mu.Lock()
+	a.usage = snap
+	a.mu.Unlock()
+	return snap, nil
 }
 
 // switchTier changes the connected assistant's routing tier on the gateway

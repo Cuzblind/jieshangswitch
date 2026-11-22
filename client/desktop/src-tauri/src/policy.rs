@@ -28,6 +28,9 @@ pub enum Action {
     Support,
     Recharge,
     OpenWeb,
+    SwitchAccount,
+    UsageLoad,
+    CatalogLoad,
     PromptsList,
     PromptSave,
     PromptEnable,
@@ -71,6 +74,9 @@ impl Action {
             Self::Support => "support",
             Self::Recharge => "recharge",
             Self::OpenWeb => "open-web",
+            Self::SwitchAccount => "switch-account",
+            Self::UsageLoad => "usage-load",
+            Self::CatalogLoad => "catalog-load",
             Self::PromptsList => "prompts-list",
             Self::PromptSave => "prompt-save",
             Self::PromptEnable => "prompt-enable",
@@ -106,6 +112,7 @@ impl Action {
                 | Self::SwitchTier
                 | Self::Repair
                 | Self::LogoutConfirm
+                | Self::CatalogLoad
                 | Self::PromptsList
                 | Self::PromptSave
                 | Self::PromptEnable
@@ -290,6 +297,19 @@ mod tests {
         let extra = serde_json::json!({"name":"fs","type":"stdio","command":"npx","origin":"https://evil.test"});
         assert!(serde_json::from_value::<McpServer>(extra).is_err());
     }
+    #[test]
+    fn usage_catalog_and_switch_account_actions_are_allowlisted() {
+        let usage: Action = serde_json::from_value(serde_json::json!("usage-load")).unwrap();
+        assert_eq!(usage.name(), "usage-load");
+        assert!(!usage.requires_agent());
+        let catalog: Action = serde_json::from_value(serde_json::json!("catalog-load")).unwrap();
+        assert_eq!(catalog.name(), "catalog-load");
+        assert!(catalog.requires_agent());
+        let sw: Action = serde_json::from_value(serde_json::json!("switch-account")).unwrap();
+        assert_eq!(sw.name(), "switch-account");
+        assert!(!sw.requires_agent());
+    }
+
     #[test]
     fn frontend_cannot_call_internal_or_generic_commands() {
         for action in [

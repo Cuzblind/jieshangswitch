@@ -39,25 +39,32 @@ type DesktopRequest struct {
 	SkillZip string `json:"skillZip,omitempty"`
 	// Tier names the target routing line (economy / balanced / stable) for switch-tier.
 	Tier string `json:"tier,omitempty"`
+	// Range selects the usage time window (24h / 7d / 30d / 90d) for usage-load.
+	Range string `json:"range,omitempty"`
 }
 
 type DesktopState struct {
-	View         View                   `json:"view"`
-	Statuses     []AgentStatus          `json:"statuses"`
-	Balance      *Balance               `json:"balance,omitempty"`
-	Version      string                 `json:"version"`
-	OS           string                 `json:"os"`
-	Authorized   bool                   `json:"authorized"`
-	Support      bool                   `json:"support"`
-	QQ           string                 `json:"qq,omitempty"`
-	Email        string                 `json:"email,omitempty"`
-	Report       string                 `json:"report,omitempty"`
-	Tools        []ToolStatus           `json:"tools,omitempty"`
-	InstallTasks []InstallTask          `json:"installTasks,omitempty"`
-	ToolUpdates  UpdateCheckState       `json:"toolUpdates"`
-	Prompts      map[string][]Prompt    `json:"prompts,omitempty"`
-	MCP          map[string][]MCPServer `json:"mcp,omitempty"`
-	Skills       map[string][]Skill     `json:"skills,omitempty"`
+	View         View                              `json:"view"`
+	Statuses     []AgentStatus                     `json:"statuses"`
+	Balance      *Balance                          `json:"balance,omitempty"`
+	AccountLabel string                            `json:"accountLabel,omitempty"`
+	Workspace    *WorkspaceInfo                    `json:"workspace,omitempty"`
+	Today        *TodayUsageSummary                `json:"today,omitempty"`
+	Usage        *UsageSnapshot                    `json:"usage,omitempty"`
+	Catalogs     map[string]*DesktopCatalogPayload `json:"catalogs,omitempty"`
+	Version      string                            `json:"version"`
+	OS           string                            `json:"os"`
+	Authorized   bool                              `json:"authorized"`
+	Support      bool                              `json:"support"`
+	QQ           string                            `json:"qq,omitempty"`
+	Email        string                            `json:"email,omitempty"`
+	Report       string                            `json:"report,omitempty"`
+	Tools        []ToolStatus                      `json:"tools,omitempty"`
+	InstallTasks []InstallTask                     `json:"installTasks,omitempty"`
+	ToolUpdates  UpdateCheckState                  `json:"toolUpdates"`
+	Prompts      map[string][]Prompt               `json:"prompts,omitempty"`
+	MCP          map[string][]MCPServer            `json:"mcp,omitempty"`
+	Skills       map[string][]Skill                `json:"skills,omitempty"`
 }
 
 type desktopReply struct {
@@ -161,9 +168,33 @@ func (a *App) DesktopState() DesktopState {
 	if a.env.ToolSnapshot != nil {
 		tools = a.env.ToolSnapshot()
 	}
-	return DesktopState{View: s.View, Statuses: s.Statuses, Balance: s.Balance,
+	a.mu.Lock()
+	accountLabel := a.accountLabel
+	var workspace *WorkspaceInfo
+	if a.workspace != nil {
+		cp := *a.workspace
+		workspace = &cp
+	}
+	var today *TodayUsageSummary
+	if a.today != nil {
+		cp := *a.today
+		today = &cp
+	}
+	usage := a.usage
+	var catalogs map[string]*DesktopCatalogPayload
+	if len(a.catalogs) > 0 {
+		catalogs = make(map[string]*DesktopCatalogPayload, len(a.catalogs))
+		for k, v := range a.catalogs {
+			catalogs[k] = v
+		}
+	}
+	a.mu.Unlock()
+	return DesktopState{
+		View: s.View, Statuses: s.Statuses, Balance: s.Balance,
+		AccountLabel: accountLabel, Workspace: workspace, Today: today, Usage: usage, Catalogs: catalogs,
 		Version: s.Version, OS: s.OS, Authorized: s.Authorized, Support: s.Support,
-		QQ: supportQQ(), Email: supportEmail(), Report: a.supportReport(), Tools: tools, InstallTasks: a.installTaskSnapshot(), ToolUpdates: a.updateSnapshot(), Prompts: promptSnapshot(), MCP: mcpSnapshot(), Skills: skillSnapshot()}
+		QQ: supportQQ(), Email: supportEmail(), Report: a.supportReport(), Tools: tools, InstallTasks: a.installTaskSnapshot(), ToolUpdates: a.updateSnapshot(), Prompts: promptSnapshot(), MCP: mcpSnapshot(), Skills: skillSnapshot(),
+	}
 }
 
 func (a *App) desktopRefresh() {
@@ -213,7 +244,7 @@ func (a *App) desktopCheck(agent string) error {
 // operations are available; there is no generic process or filesystem API.
 func (a *App) DesktopAction(r DesktopRequest) error {
 	switch r.Action {
-	case "refresh", "home", "cancel-install", "check-updates", "restore", "restore-confirm", "support", "recharge", "open-web":
+	case "refresh", "home", "cancel-install", "check-updates", "restore", "restore-confirm", "support", "recharge", "open-web", "usage-load", "switch-account":
 	default:
 		if !validAgent(r.Agent) {
 			return errors.New("请选择 Claude Code 或 Codex")
@@ -243,7 +274,7 @@ func (a *App) DesktopAction(r DesktopRequest) error {
 		return a.startDesktopInstall(r.Agent, "update")
 	case "check-updates":
 		a.startUpdateCheck()
-	case "open-web":
+	case "open-web", "switch-account":
 		agent := r.Agent
 		if !validAgent(agent) {
 			agent = "claude"
@@ -251,6 +282,32 @@ func (a *App) DesktopAction(r DesktopRequest) error {
 		if err := a.env.Open(a.web() + "/download?agent=" + agent + "&continue=1"); err != nil {
 			return errors.New("没能打开浏览器，请访问 jieshangai.com")
 		}
+	case "usage-load":
+		_, err := a.fetchUsage(r.Range)
+		return err
+	case "catalog-load":
+		secret, ok := a.env.Configured(r.Agent, a.origin)
+		if !ok || strings.TrimSpace(secret) == "" {
+			a.mu.Lock()
+			if a.catalogs != nil {
+				delete(a.catalogs, r.Agent)
+			}
+			a.mu.Unlock()
+			return nil
+		}
+		cat, err := a.fetchDesktopCatalog(secret)
+		if err != nil {
+			if errors.Is(err, errExpired) {
+				return errors.New("连接凭证已失效，请回首页重新接上后再看可用模型")
+			}
+			return errors.New("暂时读不到可用模型清单，请稍后再试")
+		}
+		a.mu.Lock()
+		if a.catalogs == nil {
+			a.catalogs = make(map[string]*DesktopCatalogPayload)
+		}
+		a.catalogs[r.Agent] = cat
+		a.mu.Unlock()
 	case "recharge":
 		if err := a.env.Open(a.web() + "/account"); err != nil {
 			return errors.New("没能打开浏览器，请访问 jieshangai.com")
@@ -495,6 +552,11 @@ func (a *App) DesktopAction(r DesktopRequest) error {
 		a.mu.Lock()
 		a.current = session{}
 		a.balance = nil
+		a.accountLabel = ""
+		a.workspace = nil
+		a.today = nil
+		a.usage = nil
+		a.catalogs = nil
 		a.desktopStates = make(map[string]AgentStatus)
 		a.mu.Unlock()
 		a.setView(View{Screen: "home", Notice: "两个助手的接上AI设置已经恢复。"})
@@ -508,7 +570,7 @@ func (a *App) DesktopAction(r DesktopRequest) error {
 // listOnly reports the read-only list actions that bypass the serial worker.
 func listOnly(action string) bool {
 	switch action {
-	case "prompts-list", "mcp-list", "skills-list":
+	case "prompts-list", "mcp-list", "skills-list", "usage-load", "catalog-load":
 		return true
 	}
 	return false

@@ -76,6 +76,46 @@ type Balance struct {
 	Red  bool   `json:"red,omitempty"`
 }
 
+type WorkspaceInfo struct {
+	Kind   string `json:"kind"`
+	Label  string `json:"label"`
+	TeamID int    `json:"teamId,omitempty"`
+}
+
+type TodayUsageSummary struct {
+	CostCNY  string `json:"costCny"`
+	Requests int    `json:"requests"`
+	Tokens   int64  `json:"tokens"`
+}
+
+type UsageHeatmapDay struct {
+	Date     string `json:"date"`
+	Requests int    `json:"requests"`
+	Tokens   int64  `json:"tokens"`
+	CostCNY  string `json:"costCny"`
+}
+
+type UsageLogRow struct {
+	ID               int    `json:"id"`
+	CreatedAt        int64  `json:"createdAt"`
+	Model            string `json:"model"`
+	PromptTokens     int    `json:"promptTokens"`
+	CompletionTokens int    `json:"completionTokens"`
+	CostCNY          string `json:"costCny"`
+	UseTimeMs        int    `json:"useTimeMs"`
+}
+
+type UsageSnapshot struct {
+	Range            string            `json:"range"`
+	CostCNY          string            `json:"costCny"`
+	Requests         int               `json:"requests"`
+	Tokens           int64             `json:"tokens"`
+	PromptTokens     int64             `json:"promptTokens"`
+	CompletionTokens int64             `json:"completionTokens"`
+	Heatmap          []UsageHeatmapDay `json:"heatmap"`
+	Logs             []UsageLogRow     `json:"logs"`
+}
+
 type App struct {
 	appVersion    string
 	current       session
@@ -93,6 +133,11 @@ type App struct {
 	view             View
 	statuses         []AgentStatus
 	balance          *Balance
+	accountLabel     string
+	workspace        *WorkspaceInfo
+	today            *TodayUsageSummary
+	usage            *UsageSnapshot
+	catalogs         map[string]*DesktopCatalogPayload
 	last             struct{ check, reason string }
 	retries          map[string]int
 	ticket           string // pending ticket for retry (never shown)

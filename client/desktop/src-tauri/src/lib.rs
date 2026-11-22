@@ -48,6 +48,7 @@ async fn desktop_action(
     mcp: Option<policy::McpServer>,
     skill_dir: Option<String>,
     tier: Option<String>,
+    range: Option<String>,
 ) -> Result<Value, String> {
     if agent
         .as_deref()
@@ -102,6 +103,10 @@ async fn desktop_action(
     if tier.len() > 32 {
         return Err("线路名称无效".into());
     }
+    let range = range.unwrap_or_default();
+    if range.len() > 16 {
+        return Err("时间范围无效".into());
+    }
     engine
         .request(json!({
             "action": action.name(),
@@ -114,6 +119,7 @@ async fn desktop_action(
             "skillDir": skill_dir,
             "skillZip": skill_zip,
             "tier": tier,
+            "range": range,
         }))
         .await
 }

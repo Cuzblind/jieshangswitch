@@ -26,6 +26,9 @@ export type Action =
   | "support"
   | "recharge"
   | "open-web"
+  | "switch-account"
+  | "usage-load"
+  | "catalog-load"
   | "prompts-list"
   | "prompt-save"
   | "prompt-enable"
@@ -108,6 +111,56 @@ export interface Assistant {
   tier?: string;
   tiers?: TierOption[];
 }
+export type UsageRange = "24h" | "7d" | "30d" | "90d";
+export interface WorkspaceInfo {
+  kind: "personal" | "team" | string;
+  label: string;
+  teamId?: number;
+}
+export interface TodayUsageSummary {
+  costCny: string;
+  requests: number;
+  tokens: number;
+}
+export interface UsageHeatmapDay {
+  date: string;
+  requests: number;
+  tokens: number;
+  costCny: string;
+}
+export interface UsageLogRow {
+  id: number;
+  createdAt: number;
+  model: string;
+  promptTokens: number;
+  completionTokens: number;
+  costCny: string;
+  useTimeMs: number;
+}
+export interface UsageSnapshot {
+  range: UsageRange;
+  costCny: string;
+  requests: number;
+  tokens: number;
+  promptTokens: number;
+  completionTokens: number;
+  heatmap: UsageHeatmapDay[];
+  logs: UsageLogRow[];
+}
+export interface CatalogModel {
+  id: string;
+  display_name?: string;
+  vendor?: string;
+  context_window?: number;
+}
+export interface CatalogSnapshot {
+  enabled: boolean;
+  version: number;
+  agent: string;
+  tier: string;
+  default_model: string;
+  models: CatalogModel[];
+}
 export interface DesktopState {
   view: View;
   statuses: Assistant[];
@@ -119,6 +172,11 @@ export interface DesktopState {
   email?: string;
   report?: string;
   balance?: { text: string; low: boolean; hint?: string; red?: boolean };
+  accountLabel?: string;
+  workspace?: WorkspaceInfo;
+  today?: TodayUsageSummary;
+  usage?: UsageSnapshot;
+  catalogs?: Partial<Record<Agent, CatalogSnapshot>>;
   engineReady?: boolean;
   engineError?: string;
   revision?: number;
@@ -199,6 +257,12 @@ export const desktopSkillAction = (
 
 export const desktopSwitchTier = (agent: Agent, tier: string) =>
   invoke<DesktopState>("desktop_action", { action: "switch-tier", agent, confirm: false, tier });
+
+export const desktopUsage = (range: UsageRange) =>
+  invoke<DesktopState>("desktop_action", { action: "usage-load", confirm: false, range });
+
+export const desktopCatalog = (agent: Agent) =>
+  invoke<DesktopState>("desktop_action", { action: "catalog-load", agent, confirm: false });
 
 // The native action enum is the boundary; legacy screen names are mapped here.
 export function viewAction(action?: string): Action {

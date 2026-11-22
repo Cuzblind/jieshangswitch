@@ -1,8 +1,15 @@
 import { useEffect, useRef, useState } from "react";
 import "@/i18n";
 import {
+  ArrowLeftRight,
   ArrowUpRight,
+  BarChart3,
   BookOpen,
+  Building2,
+  ChevronRight,
+  ChevronsUpDown,
+  Cpu,
+  ExternalLink,
   FileText,
   House,
   LifeBuoy,
@@ -10,19 +17,30 @@ import {
   Plug,
   RefreshCw,
   Settings,
+  User,
   Wallet,
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Banner, BannerAction, BannerActions, BannerDescription, BannerTitle } from "@/components/ui/banner";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
+import {
+  DropdownContent,
+  DropdownLabel,
+  DropdownMenu,
+  DropdownSeparator,
+  DropdownTrigger,
+} from "@/components/ui/dropdown";
+import { MenuItem } from "@/components/ui/menu-item";
 import { Tooltip, TooltipProvider } from "@/components/ui/tooltip";
 import { FluidHoverHighlight } from "@/components/fluid-hover-highlight";
 import { AssistantCard } from "@/components/AssistantCard";
+import { ModelsPage } from "@/components/ModelsPage";
 import { PromptsPanel } from "@/components/PromptsPanel";
 import { McpPanel } from "@/components/McpPanel";
 import { SkillsPanel } from "@/components/SkillsPanel";
 import { SettingsPage } from "@/components/SettingsPage";
+import { UsagePage, formatCompactTokens } from "@/components/UsagePage";
 import { OperationDialog, ClientUpdateDialog } from "@/components/Dialogs";
 import { BrandIcon } from "@/components/BrandIcon";
 import { useFluidHover } from "@/hooks/use-fluid-hover";
@@ -35,11 +53,13 @@ import { cn } from "@/lib/utils";
 import { useTranslation } from "react-i18next";
 import {
   desktopAction,
+  desktopCatalog,
   desktopMcpAction,
   desktopSkillAction,
   desktopSwitchTier,
   desktopPromptAction,
   desktopState,
+  desktopUsage,
   onDesktopState,
   checkAppUpdate,
   applyAppUpdate,
@@ -51,6 +71,7 @@ import {
   type McpInput,
   type PromptArgs,
   type AppUpdate,
+  type UsageRange,
 } from "@/lib/desktop";
 
 export const agents = [
@@ -66,9 +87,11 @@ export const agents = [
   },
 ];
 
-type Page = "home" | "skills" | "mcp" | "prompts" | "settings";
+type Page = "home" | "usage" | "models" | "skills" | "mcp" | "prompts" | "settings";
 const pages: { page: Page; icon: typeof House; title: string; subtitle: string }[] = [
   { page: "home", icon: House, title: "你的助手，准备好就能出发", subtitle: "安装、接上、切换线路与测试对话，在这里一次完成。" },
+  { page: "usage", icon: BarChart3, title: "用量与日志", subtitle: "查看真实消费金额、Token 用量、年度活跃度与最近请求记录。" },
+  { page: "models", icon: Cpu, title: "可用模型", subtitle: "当前已授权的 6 大品牌模型清单，点击即可复制模型 ID。" },
   { page: "skills", icon: BookOpen, title: "Skills", subtitle: "给助手装上专门的本领，比如写论文、做表格、查文献。" },
   { page: "mcp", icon: Plug, title: "MCP 服务", subtitle: "让助手连接文件、数据库、浏览器等外部工具。" },
   { page: "prompts", icon: FileText, title: "提示词", subtitle: "为助手准备常用的规则，启用后新开的会话会按它工作。" },
@@ -135,6 +158,9 @@ function DesktopShell() {
   const [noticeSeq, setNoticeSeq] = useState(0);
   const [cancelling, setCancelling] = useState(false);
   const [panelAgent, setPanelAgent] = useState<Agent>("claude");
+  const [usageRange, setUsageRange] = useState<UsageRange>("24h");
+  const [usageLoading, setUsageLoading] = useState(false);
+  const [catalogLoading, setCatalogLoading] = useState(false);
   const [clientUpdate, setClientUpdate] = useState<AppUpdate>();
   const [availableVersion, setAvailableVersion] = useState("");
   const [clientChecking, setClientChecking] = useState(false);
@@ -297,21 +323,53 @@ function DesktopShell() {
     }
   }, [checkedClean]);
 
+  async function loadUsage(nextRange: UsageRange) {
+    setUsageRange(nextRange);
+    setUsageLoading(true);
+    setError("");
+    try {
+      applyState(await desktopUsage(nextRange));
+    } catch (err) {
+      setError(message(err, "没能读取用量记录，请再试一次。"));
+    } finally {
+      setUsageLoading(false);
+    }
+  }
   async function loadPanel(next: Page, agent: Agent) {
     setPanelAgent(agent);
     setError("");
     try {
+      if (next === "models") {
+        setCatalogLoading(true);
+        try {
+          applyState(await desktopCatalog(agent));
+        } finally {
+          setCatalogLoading(false);
+        }
+        return;
+      }
       if (next === "prompts") applyState(await desktopPromptAction("prompts-list", agent));
       if (next === "mcp") applyState(await desktopMcpAction("mcp-list", agent));
       if (next === "skills") applyState(await desktopSkillAction("skills-list", agent));
     } catch (err) {
-      const what = next === "mcp" ? "MCP 服务" : next === "skills" ? "Skills" : "提示词";
+      const what =
+        next === "models"
+          ? "可用模型"
+          : next === "mcp"
+            ? "MCP 服务"
+            : next === "skills"
+              ? "Skills"
+              : "提示词";
       setError(message(err, `没能读取${what}，请再试一次。`));
     }
   }
   function go(next: Page) {
     setPage(next);
     setError("");
+    if (next === "usage") {
+      void loadUsage(usageRange);
+      return;
+    }
     if (next !== "home" && next !== "settings") void loadPanel(next, panelAgent);
   }
   async function runPrompt(action: "prompt-save" | "prompt-enable" | "prompt-delete", args: PromptArgs) {
@@ -443,12 +501,16 @@ function DesktopShell() {
   const current = pages.find((p) => p.page === page)!;
   const test = state?.version?.includes("-test");
   const anyConnected = !!state?.statuses?.some((s) => s.state === "ok");
+  const panelAgentConnected = !!state?.statuses?.some((s) => s.agent === panelAgent && s.state === "ok");
+  const workspaceLabel = state?.workspace?.label || "个人工作区";
+  const isTeamWorkspace = state?.workspace?.kind === "team";
+  const WorkspaceIcon = isTeamWorkspace ? Building2 : User;
 
   return (
     <div className="flex h-full min-h-0 w-full overflow-hidden bg-surface-1 text-foreground">
       {/* Sidebar */}
       <aside className="flex w-56 shrink-0 flex-col border-r border-border bg-surface-2 px-3 py-4">
-        <div className="mb-4 flex items-center gap-2.5 px-2">
+        <div className="mb-3 flex items-center gap-2.5 px-2">
           <img src="/brand.svg" alt="" className="size-6 rounded-md" />
           <span className={cn(typeClass("subtitle"), "text-foreground")} style={{ fontVariationSettings: fontWeights.semibold }}>
             接上AI
@@ -458,6 +520,70 @@ function DesktopShell() {
               测试版
             </Badge>
           )}
+        </div>
+
+        {/* Workspace & Account Switcher */}
+        <div className="mb-3">
+          <DropdownMenu size="compact" disabled={busy || unavailable}>
+            <DropdownTrigger
+              render={
+                <button
+                  type="button"
+                  aria-label={`工作区菜单：${workspaceLabel}`}
+                  className={cn(
+                    "flex w-full items-center gap-2 rounded-lg border border-border bg-surface-1 px-2.5 py-1.5 text-left transition-colors duration-80 hover:bg-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50",
+                  )}
+                >
+                  <WorkspaceIcon size={15} className="shrink-0 text-primary" aria-hidden="true" />
+                  <div className="min-w-0 flex-1">
+                    <div
+                      className={cn(typeClass("caption"), "truncate text-foreground")}
+                      style={{ fontVariationSettings: fontWeights.semibold }}
+                    >
+                      {workspaceLabel}
+                    </div>
+                    {state?.accountLabel && (
+                      <div className={cn(typeClass("micro"), "truncate text-muted-foreground")}>
+                        {state.accountLabel}
+                      </div>
+                    )}
+                  </div>
+                  <ChevronsUpDown size={13} className="shrink-0 text-muted-foreground" aria-hidden="true" />
+                </button>
+              }
+            />
+            <DropdownContent align="start" sideOffset={6} className="w-56">
+              <DropdownLabel>
+                {state?.accountLabel || (state?.authorized ? "已授权本机账号" : "未登录工作区")}
+              </DropdownLabel>
+              <DropdownSeparator />
+              <MenuItem
+                index={0}
+                icon={ArrowLeftRight}
+                label="切换工作区 / 账号"
+                onSelect={() => void act("switch-account")}
+              />
+              <MenuItem
+                index={1}
+                icon={ExternalLink}
+                label="打开网页控制台"
+                onSelect={() => void act("open-web")}
+              />
+              <MenuItem
+                index={2}
+                icon={Wallet}
+                label="账户充值"
+                onSelect={() => void act("recharge")}
+              />
+              <DropdownSeparator />
+              <MenuItem
+                index={3}
+                icon={RefreshCw}
+                label="刷新账户与余额"
+                onSelect={() => void act("refresh")}
+              />
+            </DropdownContent>
+          </DropdownMenu>
         </div>
 
         <nav ref={navRef} aria-label="主导航" className="relative flex flex-1 flex-col gap-0.5" {...navHover.handlers}>
@@ -604,8 +730,8 @@ function DesktopShell() {
                 )}
               </div>
             )}
-            {(page === "skills" || page === "mcp" || page === "prompts") && (
-              <AgentTabs value={panelAgent} busy={busy} onChange={(a) => void loadPanel(page, a)} />
+            {(page === "models" || page === "skills" || page === "mcp" || page === "prompts") && (
+              <AgentTabs value={panelAgent} busy={busy || catalogLoading} onChange={(a) => void loadPanel(page, a)} />
             )}
           </header>
 
@@ -677,6 +803,52 @@ function DesktopShell() {
                   ))}
                 </section>
                 {anyConnected && (
+                  <Elevated offset={2} shadowLevel={1} className="rounded-xl">
+                    <Card
+                      aria-label="今日用量概览"
+                      role="region"
+                      className="flex flex-wrap items-center justify-between gap-3 rounded-xl px-4 py-3"
+                    >
+                      <div className="flex flex-wrap items-center gap-x-5 gap-y-1.5">
+                        <span
+                          className={cn(typeClass("caption"), "inline-flex items-center gap-1.5 text-muted-foreground")}
+                          style={{ fontVariationSettings: fontWeights.semibold }}
+                        >
+                          <BarChart3 size={14} aria-hidden="true" />
+                          近 24 小时用量
+                        </span>
+                        <span className={cn(typeClass("caption"), "tabular-nums text-foreground")}>
+                          花费{" "}
+                          <strong style={{ fontVariationSettings: fontWeights.semibold }}>
+                            ¥{state?.today?.costCny ?? "0.00"}
+                          </strong>
+                        </span>
+                        <span className={cn(typeClass("caption"), "tabular-nums text-foreground")}>
+                          请求{" "}
+                          <strong style={{ fontVariationSettings: fontWeights.semibold }}>
+                            {(state?.today?.requests ?? 0).toLocaleString("zh-CN")}
+                          </strong>{" "}
+                          次
+                        </span>
+                        <span className={cn(typeClass("caption"), "tabular-nums text-foreground")}>
+                          Tokens{" "}
+                          <strong style={{ fontVariationSettings: fontWeights.semibold }}>
+                            {formatCompactTokens(state?.today?.tokens ?? 0)}
+                          </strong>
+                        </span>
+                      </div>
+                      <Button
+                        variant="ghost"
+                        size="compact"
+                        trailingIcon={ChevronRight}
+                        onClick={() => go("usage")}
+                      >
+                        查看全部日志
+                      </Button>
+                    </Card>
+                  </Elevated>
+                )}
+                {anyConnected && (
                   <Banner status="default" contrast="low" size="compact">
                     <BannerTitle>第一次打开就能直接发话</BannerTitle>
                     <BannerDescription>
@@ -694,6 +866,27 @@ function DesktopShell() {
             </p>
           )}
 
+          {page === "usage" && (
+            <UsagePage
+              usage={state?.usage}
+              range={usageRange}
+              loading={usageLoading}
+              anyConnected={anyConnected}
+              onRangeChange={(nextRange) => void loadUsage(nextRange)}
+              onRefresh={() => void loadUsage(usageRange)}
+              onGoHome={() => go("home")}
+            />
+          )}
+          {page === "models" && (
+            <ModelsPage
+              agent={panelAgent}
+              catalog={state?.catalogs?.[panelAgent]}
+              connected={panelAgentConnected}
+              loading={catalogLoading}
+              onRefresh={() => void loadPanel("models", panelAgent)}
+              onGoHome={() => go("home")}
+            />
+          )}
           {page === "skills" && (
             <SkillsPanel key={panelAgent} agent={panelAgent} skills={state?.skills?.[panelAgent] ?? []} busy={busy} run={runSkill} />
           )}

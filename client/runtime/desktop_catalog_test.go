@@ -250,3 +250,122 @@ func TestDesktopTestChatClaudeAndCodexAndErrors(t *testing.T) {
 		t.Fatalf("expected busy error on 503")
 	}
 }
+
+func TestDesktopBalanceMetaUsageAndCatalogLoad(t *testing.T) {
+	var openedURL string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/status":
+			_ = json.NewEncoder(w).Encode(map[string]any{"success": true, "data": map[string]any{}})
+		case "/v1/models":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"object": "list",
+				"data":   []map[string]any{{"id": "claude-sonnet-4-5"}},
+			})
+		case "/api/install/balance":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"success": true,
+				"data": map[string]any{
+					"balance_cny":    "42.50",
+					"balance_low":    false,
+					"tier":           "balanced",
+					"account_label":  "zh***@example.com",
+					"workspace":      map[string]any{"kind": "team", "label": "团队 · 研究组", "team_id": 7},
+					"today_cost_cny": "3.20",
+					"today_requests": 5,
+					"today_tokens":   12400,
+				},
+			})
+		case "/api/install/usage":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"success": true,
+				"data": map[string]any{
+					"range":             r.URL.Query().Get("range"),
+					"cost_cny":          "12.80",
+					"requests":          18,
+					"tokens":            64000,
+					"prompt_tokens":     48000,
+					"completion_tokens": 16000,
+					"heatmap": []map[string]any{
+						{"date": "2026-11-22", "requests": 5, "tokens": 12400, "cost_cny": "3.20"},
+					},
+					"logs": []map[string]any{
+						{
+							"id":                101,
+							"created_at":        1795300000,
+							"model":             "claude-sonnet-4-5",
+							"prompt_tokens":     800,
+							"completion_tokens": 400,
+							"cost_cny":          "0.42",
+							"use_time_ms":       1250,
+						},
+					},
+				},
+			})
+		case "/api/install/catalog":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"success": true,
+				"data": map[string]any{
+					"enabled":       true,
+					"version":       5,
+					"agent":         "claude_code",
+					"tier":          "balanced",
+					"default_model": "claude-sonnet-4-5",
+					"models": []map[string]any{
+						{"id": "claude-sonnet-4-5", "display_name": "Claude Sonnet 4.5", "vendor": "Anthropic", "context_window": 200000},
+						{"id": "deepseek-r1", "display_name": "DeepSeek R1", "vendor": "DeepSeek", "context_window": 128000},
+					},
+				},
+			})
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	app, _ := testDesktopApp(t, srv)
+	app.env.FindCLI = func(agent string) bool { return true }
+	app.env.Configured = func(agent, origin string) (string, bool) { return "sk-test-usage", true }
+	app.env.Open = func(target string) error {
+		openedURL = target
+		return nil
+	}
+
+	if err := app.DesktopAction(DesktopRequest{Action: "refresh"}); err != nil {
+		t.Fatalf("refresh failed: %v", err)
+	}
+	st := app.DesktopState()
+	if st.AccountLabel != "zh***@example.com" {
+		t.Fatalf("unexpected accountLabel: %q", st.AccountLabel)
+	}
+	if st.Workspace == nil || st.Workspace.Kind != "team" || st.Workspace.Label != "团队 · 研究组" || st.Workspace.TeamID != 7 {
+		t.Fatalf("unexpected workspace: %+v", st.Workspace)
+	}
+	if st.Today == nil || st.Today.CostCNY != "3.20" || st.Today.Requests != 5 || st.Today.Tokens != 12400 {
+		t.Fatalf("unexpected today summary: %+v", st.Today)
+	}
+
+	if err := app.DesktopAction(DesktopRequest{Action: "usage-load", Range: "7d"}); err != nil {
+		t.Fatalf("usage-load failed: %v", err)
+	}
+	st = app.DesktopState()
+	if st.Usage == nil || st.Usage.Range != "7d" || st.Usage.Requests != 18 || len(st.Usage.Logs) != 1 || len(st.Usage.Heatmap) != 1 {
+		t.Fatalf("unexpected usage snapshot: %+v", st.Usage)
+	}
+
+	if err := app.DesktopAction(DesktopRequest{Action: "catalog-load", Agent: "claude"}); err != nil {
+		t.Fatalf("catalog-load failed: %v", err)
+	}
+	st = app.DesktopState()
+	cat := st.Catalogs["claude"]
+	if cat == nil || !cat.Enabled || len(cat.Models) != 2 || cat.DefaultModel != "claude-sonnet-4-5" {
+		t.Fatalf("unexpected catalog snapshot: %+v", cat)
+	}
+
+	if err := app.DesktopAction(DesktopRequest{Action: "switch-account"}); err != nil {
+		t.Fatalf("switch-account failed: %v", err)
+	}
+	if openedURL == "" {
+		t.Fatalf("expected switch-account to open web URL")
+	}
+}

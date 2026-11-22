@@ -14,12 +14,16 @@ const api = vi.hoisted(() => ({
   appCancel: vi.fn(),
   appProgress: vi.fn(),
   switchTier: vi.fn(),
+  usage: vi.fn(),
+  catalog: vi.fn(),
 }));
 vi.mock("./lib/desktop", async (original) => ({
   ...(await original<typeof import("./lib/desktop")>()),
   desktopState: api.state,
   desktopAction: api.action,
   desktopSwitchTier: api.switchTier,
+  desktopUsage: api.usage,
+  desktopCatalog: api.catalog,
   onDesktopState: api.subscribe,
   checkAppUpdate: api.appCheck,
   applyAppUpdate: api.appInstall,
@@ -51,6 +55,8 @@ beforeEach(() => {
   api.appInstall.mockResolvedValue(undefined);
   api.appCancel.mockResolvedValue(undefined);
   api.appProgress.mockResolvedValue(() => {});
+  api.usage.mockResolvedValue(fixture());
+  api.catalog.mockResolvedValue(fixture());
   localStorage.clear();
 });
 
@@ -353,5 +359,89 @@ describe("desktop assistant flow", () => {
     });
     await waitFor(() => expect(api.action).toHaveBeenCalledWith("refresh"));
     expect(await screen.findByText("余额 ¥88.00")).toBeInTheDocument();
+  });
+
+  it("shows workspace identity switcher and triggers switch-account", async () => {
+    api.state.mockResolvedValue({
+      ...fixture(),
+      accountLabel: "zh***@example.com",
+      workspace: { kind: "team", label: "团队 · 研究组", teamId: 7 },
+    });
+    render(<App />);
+    const trigger = await screen.findByRole("button", { name: "工作区菜单：团队 · 研究组" });
+    expect(trigger).toHaveTextContent("团队 · 研究组");
+    expect(trigger).toHaveTextContent("zh***@example.com");
+    await userEvent.click(trigger);
+    const switchItem = await screen.findByRole("menuitem", { name: "切换工作区 / 账号" });
+    await userEvent.click(switchItem);
+    expect(api.action).toHaveBeenCalledWith("switch-account", undefined, false);
+  });
+
+  it("shows progressive today strip when connected and loads Usage & Logs dashboard", async () => {
+    const withUsage = (range: "24h" | "7d"): DesktopState => ({
+      ...fixture(),
+      today: { costCny: "2.40", requests: 4, tokens: 9600 },
+      usage: {
+        range,
+        costCny: range === "7d" ? "15.80" : "2.40",
+        requests: range === "7d" ? 21 : 4,
+        tokens: range === "7d" ? 64000 : 9600,
+        promptTokens: 48000,
+        completionTokens: 16000,
+        heatmap: [{ date: "2026-11-22", requests: 4, tokens: 9600, costCny: "2.40" }],
+        logs: [
+          {
+            id: 42,
+            createdAt: 1795300000,
+            model: "claude-sonnet-4-5",
+            promptTokens: 800,
+            completionTokens: 400,
+            costCny: "0.42",
+            useTimeMs: 1200,
+          },
+        ],
+      },
+    });
+    api.state.mockResolvedValue(withUsage("24h"));
+    api.usage.mockImplementation(async (r: "24h" | "7d") => withUsage(r));
+
+    render(<App />);
+    const strip = await screen.findByRole("region", { name: "今日用量概览" });
+    expect(strip).toHaveTextContent("¥2.40");
+    await userEvent.click(within(strip).getByRole("button", { name: "查看全部日志" }));
+
+    expect(api.usage).toHaveBeenCalledWith("24h");
+    expect(await screen.findByText("claude-sonnet-4-5")).toBeInTheDocument();
+
+    const rangeGroup = screen.getByRole("group", { name: "统计时间范围" });
+    await userEvent.click(within(rangeGroup).getByRole("button", { name: "7天" }));
+    expect(api.usage).toHaveBeenCalledWith("7d");
+    expect(await screen.findByText("¥15.80")).toBeInTheDocument();
+  });
+
+  it("loads authorized 6-brand models on the Models page", async () => {
+    api.catalog.mockResolvedValue({
+      ...fixture(),
+      catalogs: {
+        claude: {
+          enabled: true,
+          version: 3,
+          agent: "claude_code",
+          tier: "balanced",
+          default_model: "claude-sonnet-4-5",
+          models: [
+            { id: "claude-sonnet-4-5", display_name: "Claude Sonnet 4.5", vendor: "Anthropic", context_window: 200000 },
+            { id: "deepseek-r1", display_name: "DeepSeek R1", vendor: "DeepSeek", context_window: 128000 },
+          ],
+        },
+      },
+    });
+
+    render(<App />);
+    await userEvent.click(await screen.findByRole("button", { name: "可用模型" }));
+    expect(api.catalog).toHaveBeenCalledWith("claude");
+    expect(await screen.findByText("Claude Sonnet 4.5")).toBeInTheDocument();
+    expect(screen.getByText("DeepSeek R1")).toBeInTheDocument();
+    expect(screen.getByText("默认")).toBeInTheDocument();
   });
 });

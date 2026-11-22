@@ -95,6 +95,40 @@ const server = createServer(async (req, res) => {
         balance_low: false,
         tier,
         tiers: TIERS,
+        account_label: "sm***@example.com",
+        workspace: { kind: "personal", label: "个人工作区" },
+        today_cost_cny: "1.20",
+        today_requests: 3,
+        today_tokens: 4500,
+      },
+    });
+  }
+  if (req.method === "GET" && url.pathname === "/api/install/usage") {
+    if (!state.tiersByKey[auth]) {
+      return sendJson(res, 401, { success: false, message: "unauthorized" });
+    }
+    const range = url.searchParams.get("range") || "24h";
+    return sendJson(res, 200, {
+      success: true,
+      data: {
+        range,
+        cost_cny: "6.40",
+        requests: 9,
+        tokens: 28000,
+        prompt_tokens: 20000,
+        completion_tokens: 8000,
+        heatmap: [{ date: "2026-11-22", requests: 3, tokens: 4500, cost_cny: "1.20" }],
+        logs: [
+          {
+            id: 1,
+            created_at: Math.floor(Date.now() / 1000) - 60,
+            model: "claude-sonnet-4-5",
+            prompt_tokens: 800,
+            completion_tokens: 400,
+            cost_cny: "0.40",
+            use_time_ms: 950,
+          },
+        ],
       },
     });
   }
@@ -289,6 +323,9 @@ async function main() {
     assert.equal(claudeStatus?.tier, "balanced");
     assert.equal(claudeStatus?.tiers?.length, 3);
     assert.equal(stClaude.balance?.text, "余额 ¥35.00");
+    assert.equal(stClaude.accountLabel, "sm***@example.com");
+    assert.equal(stClaude.workspace?.label, "个人工作区");
+    assert.equal(stClaude.today?.requests, 3);
 
     const writtenClaude = JSON.parse(readFileSync(claudeSettingsPath, "utf8"));
     assert.equal(writtenClaude.theme, "dark", "must preserve user theme");
@@ -324,7 +361,13 @@ async function main() {
     assert.ok(state.checks >= 1);
     const stChat = await request({ action: "test-chat", agent: "claude" });
     assert.ok(stChat.view?.notice?.includes("对话已通"), `expected chat probe pass notice, got ${stChat.view?.notice}`);
-    console.log("[smoke] PASS 4/5: /v1/models check & real test-chat message probe both passed");
+    const stUsage = await request({ action: "usage-load", range: "7d" });
+    assert.equal(stUsage.usage?.range, "7d");
+    assert.equal(stUsage.usage?.requests, 9);
+    assert.equal(stUsage.usage?.logs?.length, 1);
+    const stCatalog = await request({ action: "catalog-load", agent: "claude" });
+    assert.equal(stCatalog.catalogs?.claude?.models?.length, 3);
+    console.log("[smoke] PASS 4/5: /v1/models check, real test-chat probe, usage-load & catalog-load passed");
 
     // Global restore -> confirm -> verify original configs cleanly restored
     const stConfirm = await request({ action: "restore" });
