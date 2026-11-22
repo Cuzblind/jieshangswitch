@@ -74,7 +74,14 @@ clean_claude() {
   if ! RELAY_SETTINGS_PATH="$path" python3 - <<'PY'
 import json, os, sys
 path = os.environ["RELAY_SETTINGS_PATH"]
-keys = ("ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_API_KEY")
+keys = (
+    "ANTHROPIC_BASE_URL",
+    "ANTHROPIC_AUTH_TOKEN",
+    "ANTHROPIC_API_KEY",
+    "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC",
+    "DISABLE_TELEMETRY",
+    "DISABLE_ERROR_REPORTING",
+)
 tmp = path + ".tmp"
 try:
     with open(path, encoding="utf-8") as fh:

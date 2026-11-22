@@ -40,6 +40,7 @@ type Env struct {
 	CheckToolUpdates   func(context.Context) error
 	InstallDiagnostics func(agent string) string
 	LaunchGUI          func(agent, secret, origin string) error
+	GUIRunning         func(agent string) bool
 	Running            func(agent string) bool
 	Kill               func(agent string) error
 	Launch             func(agent, secret string) error
@@ -1338,7 +1339,14 @@ func (a *App) diagLocked() []string {
 		d = append(d, "出错原因："+reasonText(a.last.reason))
 	}
 	for _, s := range a.statuses {
-		d = append(d, s.Name+"："+s.Badge)
+		line := s.Name + "：" + s.Badge
+		if s.Tier != "" {
+			line += "（线路：" + s.Tier + "）"
+		}
+		d = append(d, line)
+	}
+	if a.workspace != nil && a.workspace.Label != "" {
+		d = append(d, "工作区："+a.workspace.Label)
 	}
 	return d
 }

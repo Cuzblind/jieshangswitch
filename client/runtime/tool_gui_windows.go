@@ -262,11 +262,47 @@ func (m *toolManager) installGUIPlatform(ctx context.Context, agent string, upda
 	if offlineErr != nil && !os.IsNotExist(offlineErr) {
 		return offlineErr
 	}
-	// The Store channel only performs fresh installs (--no-upgrade); during an
-	// update its "already installed" result would be misread as a Store outage
-	// and poison the 24h fallback marker, so updates start at the package
-	// sources below.
+	var e error
+	var lastErr error
+	sourceLabel := "offline"
+	// Domestic mirror / operator proxy FIRST: avoids waiting minutes on stalled
+	// Microsoft Store connections in mainland China. OS Authenticode & MSIX
+	// identity checks still gate installation unconditionally.
+	if file == "" {
+		if rel, ok := m.overrideGUIRelease(ctx, agent); ok {
+			progress("正在从代理加速源获取官方桌面版……")
+			r = rel
+			sourceLabel = "override-mirror"
+			file, lastErr = m.downloadGUIReleaseWith(ctx, m.overrideDownloader(), agent, r, sourceLabel, progress)
+			if lastErr != nil {
+				m.diagnostic(agent, "gui", "download", "override-mirror", "", lastErr)
+				file = ""
+			}
+		}
+	}
+	if file == "" {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		progress("正在从国内镜像获取官方桌面版……")
+		if rel, mirrorErr := mirrorGUIRelease(m.goos, m.arch, agent); mirrorErr == nil {
+			r = rel
+			sourceLabel = "mirror"
+			file, lastErr = m.downloadGUIRelease(ctx, agent, r, sourceLabel, progress)
+			if lastErr != nil {
+				m.diagnostic(agent, "gui", "download", "agentsmirror", "", lastErr)
+				file = ""
+			}
+		} else {
+			lastErr = transferFailure("metadata", "agentsmirror", 0, mirrorErr)
+			m.diagnostic(agent, "gui", "metadata", "agentsmirror", "", mirrorErr)
+		}
+	}
+	// Fallback to Microsoft Store (winget) for fresh installs when mirrors fail.
 	if file == "" && !update && !m.storeUnavailableFor(agent) {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
 		store := m.installStore(ctx, agent, progress)
 		m.diagnostic(agent, "gui", "msstore", "msstore", store.Output, store.Err)
 		if ctx.Err() != nil {
@@ -283,32 +319,6 @@ func (m *toolManager) installGUIPlatform(ctx context.Context, agent string, upda
 				m.markStoreUnavailable(agent)
 			}
 			progress("微软商店暂不可用，切换官方完整安装包……")
-		}
-	} else if file == "" {
-		if update {
-			progress("正在通过完整安装包更新桌面版……")
-		} else {
-			progress("微软商店上次未完成，直接尝试官方完整安装包……")
-		}
-	}
-	var e error
-	var lastErr error
-	sourceLabel := "offline"
-	if file == "" {
-		// Mainland-China first: claude.ai geo-blocks CN addresses and the vendor
-		// CDN crawls from CN links, while the mirror serves the official package from a domestic node at multiples of the speed.
-		progress("正在从国内镜像获取官方桌面版……")
-		if rel, mirrorErr := mirrorGUIRelease(m.goos, m.arch, agent); mirrorErr == nil {
-			r = rel
-			sourceLabel = "mirror"
-			file, lastErr = m.downloadGUIRelease(ctx, agent, r, sourceLabel, progress)
-			if lastErr != nil {
-				m.diagnostic(agent, "gui", "download", "agentsmirror", "", lastErr)
-				file = ""
-			}
-		} else {
-			lastErr = transferFailure("metadata", "agentsmirror", 0, mirrorErr)
-			m.diagnostic(agent, "gui", "metadata", "agentsmirror", "", mirrorErr)
 		}
 	}
 	if file == "" {
@@ -391,7 +401,11 @@ func (m *toolManager) installGUIPlatform(ctx context.Context, agent string, upda
 }
 
 func (m *toolManager) downloadGUIRelease(ctx context.Context, agent string, r guiRelease, source string, progress func(string)) (string, error) {
-	file, err := m.download.file(ctx, r.URL, r.SHA256, progress)
+	return m.downloadGUIReleaseWith(ctx, m.download, agent, r, source, progress)
+}
+
+func (m *toolManager) downloadGUIReleaseWith(ctx context.Context, dl *toolDownloader, agent string, r guiRelease, source string, progress func(string)) (string, error) {
+	file, err := dl.file(ctx, r.URL, r.SHA256, progress)
 	if err != nil && r.FallbackURL != "" {
 		progress("HTTPS 下载暂不可达，切换微软 CDN 兼容通道……")
 		fallback := &toolDownloader{

@@ -350,7 +350,10 @@ try:
         env = {}
     env["ANTHROPIC_BASE_URL"] = base
     env["ANTHROPIC_AUTH_TOKEN"] = secret
-    env["ANTHROPIC_API_KEY"] = secret
+    env.pop("ANTHROPIC_API_KEY", None)
+    env["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"] = "1"
+    env["DISABLE_TELEMETRY"] = "1"
+    env["DISABLE_ERROR_REPORTING"] = "1"
     data["env"] = env
     tmp = path + ".tmp"
     with open(tmp, "w", encoding="utf-8") as fh:
@@ -381,7 +384,9 @@ PY
   "env": {
     "ANTHROPIC_BASE_URL": $qbase,
     "ANTHROPIC_AUTH_TOKEN": $qsecret,
-    "ANTHROPIC_API_KEY": $qsecret
+    "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
+    "DISABLE_TELEMETRY": "1",
+    "DISABLE_ERROR_REPORTING": "1"
   }
 }
 EOF

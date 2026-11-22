@@ -1,5 +1,5 @@
 import { useMemo } from "react";
-import { RefreshCw, Sparkles } from "lucide-react";
+import { ExternalLink, RefreshCw, Sparkles } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Banner, BannerDescription, BannerTitle } from "@/components/ui/banner";
 import { Button } from "@/components/ui/button";
@@ -48,6 +48,7 @@ export function ModelsPage({
   loading,
   onRefresh,
   onGoHome,
+  onOpenPricing,
 }: {
   agent: Agent;
   catalog?: CatalogSnapshot;
@@ -55,6 +56,7 @@ export function ModelsPage({
   loading: boolean;
   onRefresh: () => void;
   onGoHome: () => void;
+  onOpenPricing?: () => void;
 }) {
   const agentTitle = agent === "codex" ? "Codex" : "Claude Code";
 
@@ -121,16 +123,28 @@ export function ModelsPage({
             </Badge>
           )}
         </div>
-        <Button
-          variant="tertiary"
-          size="compact"
-          leadingIcon={loading ? undefined : RefreshCw}
-          loading={loading}
-          disabled={loading}
-          onClick={onRefresh}
-        >
-          {loading ? "正在同步" : "刷新清单"}
-        </Button>
+        <div className="flex items-center gap-2">
+          {onOpenPricing && (
+            <Button
+              variant="ghost"
+              size="compact"
+              trailingIcon={ExternalLink}
+              onClick={onOpenPricing}
+            >
+              查看价格说明
+            </Button>
+          )}
+          <Button
+            variant="tertiary"
+            size="compact"
+            leadingIcon={loading ? undefined : RefreshCw}
+            loading={loading}
+            disabled={loading}
+            onClick={onRefresh}
+          >
+            {loading ? "正在同步" : "刷新清单"}
+          </Button>
+        </div>
       </div>
 
       {catalog?.default_model && (

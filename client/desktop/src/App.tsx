@@ -8,14 +8,17 @@ import {
   Building2,
   ChevronRight,
   ChevronsUpDown,
+  Copy,
   Cpu,
   ExternalLink,
   FileText,
+  FolderOpen,
   House,
   LifeBuoy,
   Loader2,
   Plug,
   RefreshCw,
+  RotateCcw,
   Settings,
   User,
   Wallet,
@@ -55,6 +58,7 @@ import {
   desktopAction,
   desktopCatalog,
   desktopMcpAction,
+  desktopSetWorkDir,
   desktopSkillAction,
   desktopSwitchTier,
   desktopPromptAction,
@@ -83,7 +87,7 @@ export const agents = [
   {
     agent: "codex" as const,
     name: "Codex",
-    description: "写代码、修问题，帮你完成研究中的重复工作。",
+    description: "OpenAI 出品（兼容 ChatGPT / Codex 桌面端），写代码、处理表格与研究中的重复工作。",
   },
 ];
 
@@ -473,7 +477,10 @@ function DesktopShell() {
       setCancelling(false);
     }
   }
-  async function copy(action: "copy-qq" | "copy-email" | "copy-report", label: string) {
+  async function copy(
+    action: "copy-qq" | "copy-email" | "copy-report" | "copy-first-prompt",
+    label: string,
+  ) {
     try {
       await desktopAction(action);
       setCopied(label);
@@ -481,6 +488,29 @@ function DesktopShell() {
       setError("没能复制，请手动选中并复制。");
     }
   }
+  async function selectWorkDir(dir: string) {
+    if (busy || unavailable) return;
+    setPending(true);
+    setError("");
+    try {
+      const next = await desktopSetWorkDir(dir);
+      applyState(next);
+      if (next.view.notice) {
+        setGoneNotice("");
+        setNoticeSeq((n) => n + 1);
+      }
+    } catch (err) {
+      setError(message(err, "没能切换工作目录，请再试一次。"));
+    } finally {
+      setPending(false);
+    }
+  }
+
+  useEffect(() => {
+    if (!copied) return;
+    const timer = window.setTimeout(() => setCopied(""), 3000);
+    return () => window.clearTimeout(timer);
+  }, [copied]);
 
   const view = state?.view;
   const viewKey = JSON.stringify(view ?? {});
@@ -744,6 +774,20 @@ function DesktopShell() {
               <BannerTitle>测试版，请勿用于正式账户。</BannerTitle>
             </Banner>
           )}
+          {page === "home" && anyConnected && state?.balance?.low && (
+            <Banner status="warning" contrast="low" size="compact">
+              <BannerTitle>当前账户余额偏低（{state.balance.text}），建议提前充值避免对话中断</BannerTitle>
+              <BannerActions>
+                <BannerAction
+                  variant="primary"
+                  disabled={busy || unavailable}
+                  onClick={() => void act("recharge")}
+                >
+                  去网页充值
+                </BannerAction>
+              </BannerActions>
+            </Banner>
+          )}
 
           {/* Status & feedback banners */}
           <div className="flex flex-col gap-2">
@@ -854,12 +898,103 @@ function DesktopShell() {
                     </Card>
                   </Elevated>
                 )}
+                {anyConnected && state?.workDir && (() => {
+                  const fullDir = state.workDir;
+                  const shortDir = fullDir.split(/[\\/]/).filter(Boolean).pop() || fullDir;
+                  const recents = (state.recentDirs ?? []).filter((d) => d && d !== fullDir);
+                  return (
+                    <Elevated offset={2} shadowLevel={1} className="rounded-xl">
+                      <Card
+                        aria-label="命令行工作目录"
+                        role="region"
+                        className="rounded-xl px-4 py-3"
+                      >
+                        <div className="flex w-full flex-wrap items-center justify-between gap-3">
+                          <div className="flex min-w-0 flex-1 items-center gap-2.5">
+                            <FolderOpen size={15} className="shrink-0 text-primary" aria-hidden="true" />
+                            <div className="min-w-0">
+                              <div className="flex items-center gap-2">
+                                <span
+                                  className={cn(typeClass("caption"), "text-muted-foreground")}
+                                  style={{ fontVariationSettings: fontWeights.semibold }}
+                                >
+                                  命令行工作目录
+                                </span>
+                                <span
+                                  className={cn(typeClass("caption"), "truncate text-foreground")}
+                                  style={{ fontVariationSettings: fontWeights.semibold }}
+                                >
+                                  {shortDir}
+                                </span>
+                              </div>
+                              <p className={cn(typeClass("micro"), "m-0 truncate text-muted-foreground")} title={fullDir}>
+                                {fullDir}
+                              </p>
+                            </div>
+                          </div>
+                          <div className="flex shrink-0 items-center gap-1.5">
+                            {recents.length > 0 && (
+                              <DropdownMenu size="compact" disabled={busy || unavailable}>
+                                <DropdownTrigger
+                                  render={
+                                    <Button variant="ghost" size="compact" trailingIcon={ChevronsUpDown}>
+                                      最近目录
+                                    </Button>
+                                  }
+                                />
+                                <DropdownContent align="end" sideOffset={6} className="w-64">
+                                  <DropdownLabel>最近使用过的工作文件夹</DropdownLabel>
+                                  <DropdownSeparator />
+                                  {recents.map((dir, index) => (
+                                    <MenuItem
+                                      key={dir}
+                                      index={index}
+                                      icon={FolderOpen}
+                                      label={dir.split(/[\\/]/).filter(Boolean).pop() || dir}
+                                      onSelect={() => void selectWorkDir(dir)}
+                                    />
+                                  ))}
+                                  <DropdownSeparator />
+                                  <MenuItem
+                                    index={recents.length}
+                                    icon={RotateCcw}
+                                    label="恢复默认工作区"
+                                    onSelect={() => void selectWorkDir("")}
+                                  />
+                                </DropdownContent>
+                              </DropdownMenu>
+                            )}
+                            <Button
+                              variant="tertiary"
+                              size="compact"
+                              leadingIcon={FolderOpen}
+                              disabled={busy || unavailable}
+                              onClick={() => void act("pick-work-dir")}
+                            >
+                              选择文件夹
+                            </Button>
+                          </div>
+                        </div>
+                      </Card>
+                    </Elevated>
+                  );
+                })()}
                 {anyConnected && (
                   <Banner status="default" contrast="low" size="compact">
                     <BannerTitle>第一次打开就能直接发话</BannerTitle>
                     <BannerDescription>
-                      打开命令行后，如遇到文件夹信任提示直接按回车确认；也可以先点卡片右下角「测试对话」验证已真通。
+                      推荐首句：「帮我看看当前文件夹里有哪些文件，并按类型整理成一份清单」。点「打开桌面版」直接粘贴发送，或点「打开命令行」粘贴回车即可。
                     </BannerDescription>
+                    <BannerActions>
+                      <BannerAction
+                        variant="secondary"
+                        disabled={busy || unavailable}
+                        onClick={() => void copy("copy-first-prompt", "首句提示词")}
+                      >
+                        <Copy size={13} aria-hidden="true" />
+                        {copied === "首句提示词" ? "已复制，去粘贴回车" : "复制首句提示词"}
+                      </BannerAction>
+                    </BannerActions>
                   </Banner>
                 )}
               </>
@@ -891,6 +1026,7 @@ function DesktopShell() {
               loading={catalogLoading}
               onRefresh={() => void loadPanel("models", panelAgent)}
               onGoHome={() => go("home")}
+              onOpenPricing={() => void act("open-pricing")}
             />
           )}
           {page === "skills" && (
@@ -919,8 +1055,10 @@ function DesktopShell() {
               checkedAt={state?.toolUpdates?.checkedAt}
               installing={installing}
               disabled={busy || unavailable}
+              reportCopied={copied === "诊断信息"}
               onClientUpdate={() => void checkClientUpdate()}
               onToolUpdates={() => void act("check-updates")}
+              onCopyReport={() => void copy("copy-report", "诊断信息")}
               onRestore={() => void act("restore")}
             />
           )}

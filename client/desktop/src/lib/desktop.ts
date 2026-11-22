@@ -6,6 +6,7 @@ export type Action =
   | "copy-qq"
   | "copy-email"
   | "copy-report"
+  | "copy-first-prompt"
   | "refresh"
   | "home"
   | "connect"
@@ -25,8 +26,11 @@ export type Action =
   | "logout-confirm"
   | "support"
   | "recharge"
+  | "open-pricing"
   | "open-web"
   | "switch-account"
+  | "pick-work-dir"
+  | "set-work-dir"
   | "usage-load"
   | "catalog-load"
   | "prompts-list"
@@ -174,6 +178,8 @@ export interface DesktopState {
   balance?: { text: string; low: boolean; hint?: string; red?: boolean };
   accountLabel?: string;
   workspace?: WorkspaceInfo;
+  workDir?: string;
+  recentDirs?: string[];
   today?: TodayUsageSummary;
   usage?: UsageSnapshot;
   catalogs?: Partial<Record<Agent, CatalogSnapshot>>;
@@ -263,6 +269,9 @@ export const desktopUsage = (range: UsageRange) =>
 
 export const desktopCatalog = (agent: Agent) =>
   invoke<DesktopState>("desktop_action", { action: "catalog-load", agent, confirm: false });
+
+export const desktopSetWorkDir = (workDir: string) =>
+  invoke<DesktopState>("desktop_action", { action: "set-work-dir", confirm: false, workDir });
 
 // The native action enum is the boundary; legacy screen names are mapped here.
 export function viewAction(action?: string): Action {

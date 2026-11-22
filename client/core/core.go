@@ -141,7 +141,12 @@ func (p Paths) WriteClaude(o ClaudeOpts) error {
 	}
 	env.set("ANTHROPIC_BASE_URL", origin)
 	env.set("ANTHROPIC_AUTH_TOKEN", o.Secret)
-	env.set("ANTHROPIC_API_KEY", o.Secret)
+	// Avoid Claude Code's "Auth conflict" warning when both token and API key coexist.
+	env.del("ANTHROPIC_API_KEY")
+	// Prevent first-run stalls / telemetry timeouts on mainland China networks.
+	env.set("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", "1")
+	env.set("DISABLE_TELEMETRY", "1")
+	env.set("DISABLE_ERROR_REPORTING", "1")
 	data.set("env", env)
 	out := dumpJSON(data)
 	if err := atomicWrite(path, out, 0o600); err != nil {
@@ -597,7 +602,14 @@ func clearClaude(path string) error {
 	}
 	if ev, _ := data.get("env"); ev != nil {
 		if env, ok := ev.(*jsonObject); ok {
-			for _, k := range []string{"ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_API_KEY"} {
+			for _, k := range []string{
+				"ANTHROPIC_BASE_URL",
+				"ANTHROPIC_AUTH_TOKEN",
+				"ANTHROPIC_API_KEY",
+				"CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC",
+				"DISABLE_TELEMETRY",
+				"DISABLE_ERROR_REPORTING",
+			} {
 				env.del(k)
 			}
 			if env.len() == 0 {

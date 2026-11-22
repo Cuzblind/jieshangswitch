@@ -106,7 +106,7 @@ func (a *App) taskProgress(op *desktopInstallation, line string) {
 	op.state.Line = line
 	a.installMu.Unlock()
 }
-func (a *App) finishInstall(op *desktopInstallation, err error) {
+func (a *App) finishInstall(op *desktopInstallation, component string, err error) {
 	op.cancel()
 	a.installMu.Lock()
 	defer a.installMu.Unlock()
@@ -118,10 +118,29 @@ func (a *App) finishInstall(op *desktopInstallation, err error) {
 	case err != nil:
 		op.state.Error = installErrorMessage(err)
 		op.state.Line = "部分组件未完成，已经装好的组件会保留。"
+	case component == "gui":
+		op.state.Line = "官方桌面版已安装并接好，点「打开桌面版」即可直接使用。"
 	default:
-		op.state.Line = "CLI 和桌面版均已安装；新打开的终端即可输入 claude / codex。"
+		op.state.Line = "官方桌面版与命令行均已安装；点「打开桌面版」即可直接使用。"
 	}
 	close(op.done)
+}
+func (a *App) shouldAutoInstallGUI(agent string) bool {
+	if a.env.InstallDesktop == nil || a.env.ToolSnapshot == nil {
+		return false
+	}
+	a.installMu.Lock()
+	if op := a.installations[agent]; op != nil && op.state.Busy {
+		a.installMu.Unlock()
+		return false
+	}
+	a.installMu.Unlock()
+	for _, t := range a.env.ToolSnapshot() {
+		if t.Agent == agent {
+			return t.GUIAvailable && t.GUIInspected && !t.GUIInstalled
+		}
+	}
+	return false
 }
 func (a *App) startDesktopInstall(agent, component string) error {
 	ctx, op, err := a.beginInstall(agent)
@@ -131,7 +150,12 @@ func (a *App) startDesktopInstall(agent, component string) error {
 	go func() {
 		err := a.callDesktopInstaller(ctx, agent, component, func(s string) { a.taskProgress(op, s) })
 		a.desktopLocalRefresh()
-		a.finishInstall(op, err)
+		if err == nil {
+			if secret, ok := a.env.Configured(agent, a.origin); ok {
+				a.syncDesktopCatalog(agent, secret)
+			}
+		}
+		a.finishInstall(op, component, err)
 	}()
 	return nil
 }
@@ -155,7 +179,7 @@ func (a *App) installDesktopComponent(agent, component string) error {
 	if ctx.Err() != nil {
 		err = ctx.Err()
 	}
-	a.finishInstall(op, err)
+	a.finishInstall(op, component, err)
 	return err
 }
 func (a *App) waitForCLIInstall(agent string) error {

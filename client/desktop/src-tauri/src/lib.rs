@@ -35,6 +35,21 @@ async fn pick_skill_zip(app: &tauri::AppHandle) -> Option<String> {
     path.to_str().map(str::to_owned)
 }
 
+/// Opens the system picker for a working folder. None when the user cancels.
+async fn pick_work_dir(app: &tauri::AppHandle) -> Option<String> {
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    app.dialog()
+        .file()
+        .set_title("选择命令行工作文件夹")
+        .pick_folder(move |path| {
+            let _ = tx.send(path);
+        });
+    let path = rx.await.ok()??.into_path().ok()?;
+    path.to_str().map(str::to_owned)
+}
+
+const FIRST_CHAT_PROMPT: &str = "帮我看看当前文件夹里有哪些文件，并按类型整理成一份清单";
+
 #[tauri::command]
 async fn desktop_action(
     app: tauri::AppHandle,
@@ -49,6 +64,7 @@ async fn desktop_action(
     skill_dir: Option<String>,
     tier: Option<String>,
     range: Option<String>,
+    work_dir: Option<String>,
 ) -> Result<Value, String> {
     if agent
         .as_deref()
@@ -56,6 +72,13 @@ async fn desktop_action(
         || (action.requires_agent() && agent.is_none())
     {
         return Err("请选择 Claude Code 或 Codex".into());
+    }
+    if matches!(action, Action::CopyFirstPrompt) {
+        let state = engine.state();
+        app.clipboard()
+            .write_text(FIRST_CHAT_PROMPT.to_string())
+            .map_err(|_| "没能复制，请手动选中并复制。")?;
+        return Ok(state);
     }
     let field = match action {
         Action::CopyQq => Some("qq"),
@@ -107,6 +130,17 @@ async fn desktop_action(
     if range.len() > 16 {
         return Err("时间范围无效".into());
     }
+    let work_dir = if action.picks_work_dir() {
+        match pick_work_dir(&app).await {
+            Some(path) => path,
+            None => return Ok(engine.state()),
+        }
+    } else {
+        work_dir.unwrap_or_default()
+    };
+    if work_dir.len() > 1024 {
+        return Err("文件夹路径过长".into());
+    }
     engine
         .request(json!({
             "action": action.name(),
@@ -120,6 +154,7 @@ async fn desktop_action(
             "skillZip": skill_zip,
             "tier": tier,
             "range": range,
+            "workDir": work_dir,
         }))
         .await
 }

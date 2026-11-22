@@ -51,6 +51,16 @@ func (m *toolManager) installGUIPlatform(ctx context.Context, agent string, upda
 		return e
 	}
 	if file == "" {
+		if rel, ok := m.overrideGUIRelease(ctx, agent); ok {
+			progress("正在从代理加速源获取官方桌面版……")
+			if dl, dlErr := m.overrideDownloader().file(ctx, rel.URL, "", progress); dlErr == nil {
+				r, file = rel, dl
+			} else {
+				m.diagnostic(agent, "gui", "download", "override-mirror", "", dlErr)
+			}
+		}
+	}
+	if file == "" {
 		// downloads.claude.ai is unreachable from mainland China; the mirror
 		// serves the official archive from a reachable node.
 		// Its identity is still gated by the codesign/TeamID/spctl checks below.

@@ -56,8 +56,10 @@ func launch(agent, secret string) error {
 	if agent == "codex" && secret != "" {
 		extra = append(extra, "JIESHANGAI_CODEX_KEY="+secret)
 	}
+	workDir := resolveLaunchWorkDir()
+	extra = append(extra, "JIESHANGAI_WORKDIR="+workDir)
 	if wt := windowsTerminalPath(); wt != "" && cmdSafeEnvValue(secret) {
-		if err := launchWindowsTerminal(wt, agent, secret); err == nil {
+		if err := launchWindowsTerminal(wt, agent, secret, workDir); err == nil {
 			return nil
 		}
 	}
@@ -85,7 +87,7 @@ func windowsTerminalPath() string {
 // launchWindowsTerminal hands the tab to the terminal process, and a tab in an
 // already-running Windows Terminal inherits that process's environment — not
 // ours. The wrapper script re-establishes PATH and the Codex session key.
-func launchWindowsTerminal(wt, agent, secret string) error {
+func launchWindowsTerminal(wt, agent, secret, workDir string) error {
 	dir := filepath.Join(homeDir(), ".jieshangai", "launch")
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		return err
@@ -104,13 +106,17 @@ func launchWindowsTerminal(wt, agent, secret string) error {
 			return errors.New("terminal wrapper path cannot be passed to wt safely")
 		}
 	}
-	c := exec.Command(wt, "-w", "0", "new-tab", "--title", agentName(agent), "--startingDirectory", homeDir(), "cmd", "/k", target)
+	if workDir == "" {
+		workDir = homeDir()
+	}
+	c := exec.Command(wt, "-w", "0", "new-tab", "--title", agentName(agent), "--startingDirectory", workDir, "cmd", "/k", target)
 	return c.Run()
 }
 
 // terminalWrapperScript is executed by the Windows Terminal tab. Every path is
 // expanded at runtime (%~dp0 is the script's own directory), keeping the file
-// pure ASCII so cmd's codepage cannot corrupt a non-ASCII profile path. The
+// pure ASCII so cmd's codepage cannot corrupt a non-ASCII profile or workDir
+// path (wt already sets the working directory via --startingDirectory). The
 // caller must reject non-cmd-safe secrets (see cmdSafeEnvValue).
 func terminalWrapperScript(agent, secret string) string {
 	s := "@echo off\r\n" +
@@ -118,8 +124,7 @@ func terminalWrapperScript(agent, secret string) string {
 	if agent == "codex" && secret != "" {
 		s += "set \"JIESHANGAI_CODEX_KEY=" + secret + "\"\r\n"
 	}
-	return s + "cd /d \"%USERPROFILE%\"\r\n" +
-		"call \"%~dp0..\\tools\\bin\\" + agent + ".cmd\"\r\n"
+	return s + "call \"%~dp0..\\tools\\bin\\" + agent + ".cmd\"\r\n"
 }
 
 // cmdSafeEnvValue reports whether a value survives batch-file parsing: cmd
@@ -153,14 +158,14 @@ func shortPath(p string) string {
 }
 
 func launchPowerShellTerminal(agent string, extra []string) error {
-	script := "Start-Process -FilePath (Join-Path $PSHOME 'powershell.exe') -WorkingDirectory $env:USERPROFILE -ArgumentList @('-NoExit','-NoProfile','-Command','Set-Location $env:USERPROFILE; " + agent + "') -ErrorAction Stop"
+	script := "$wd = if ($env:JIESHANGAI_WORKDIR) { $env:JIESHANGAI_WORKDIR } else { $env:USERPROFILE }; Start-Process -FilePath (Join-Path $PSHOME 'powershell.exe') -WorkingDirectory $wd -ArgumentList @('-NoExit','-NoProfile','-Command','Set-Location -LiteralPath (if ($env:JIESHANGAI_WORKDIR) { $env:JIESHANGAI_WORKDIR } else { $env:USERPROFILE }); " + agent + "') -ErrorAction Stop"
 	cmd := hidden(exec.Command(powershell(), "-NoProfile", "-NonInteractive", "-Command", script))
 	cmd.Env = cmdEnv(extra...)
 	return cmd.Run()
 }
 
 func launchCmdTerminal(agent string, extra []string) error {
-	script := "Start-Process -FilePath $env:ComSpec -WorkingDirectory $env:USERPROFILE -ArgumentList '/k " + agent + "' -ErrorAction Stop"
+	script := "$wd = if ($env:JIESHANGAI_WORKDIR) { $env:JIESHANGAI_WORKDIR } else { $env:USERPROFILE }; Start-Process -FilePath $env:ComSpec -WorkingDirectory $wd -ArgumentList '/k " + agent + "' -ErrorAction Stop"
 	cmd := hidden(exec.Command(powershell(), "-NoProfile", "-NonInteractive", "-Command", script))
 	cmd.Env = cmdEnv(extra...)
 	return cmd.Run()

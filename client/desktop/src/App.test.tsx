@@ -16,6 +16,7 @@ const api = vi.hoisted(() => ({
   switchTier: vi.fn(),
   usage: vi.fn(),
   catalog: vi.fn(),
+  setWorkDir: vi.fn(),
 }));
 vi.mock("./lib/desktop", async (original) => ({
   ...(await original<typeof import("./lib/desktop")>()),
@@ -24,6 +25,7 @@ vi.mock("./lib/desktop", async (original) => ({
   desktopSwitchTier: api.switchTier,
   desktopUsage: api.usage,
   desktopCatalog: api.catalog,
+  desktopSetWorkDir: api.setWorkDir,
   onDesktopState: api.subscribe,
   checkAppUpdate: api.appCheck,
   applyAppUpdate: api.appInstall,
@@ -450,5 +452,37 @@ describe("desktop assistant flow", () => {
     expect(await screen.findByText("Claude Sonnet 4.5")).toBeInTheDocument();
     expect(screen.getByText("DeepSeek R1")).toBeInTheDocument();
     expect(screen.getByText("默认")).toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("button", { name: "查看价格说明" }));
+    expect(api.action).toHaveBeenCalledWith("open-pricing", undefined, false);
+  });
+
+  it("shows low-balance banner, working directory selector, starter prompt copy, and diagnostic export", async () => {
+    api.state.mockResolvedValue({
+      ...fixture(),
+      balance: { text: "余额 ¥1.20", low: true },
+      workDir: "/Users/alice/Desktop/接上AI工作区",
+      recentDirs: ["/Users/alice/Desktop/接上AI工作区", "/Users/alice/Documents/论文草稿"],
+    });
+    api.action.mockImplementation(async () => ({
+      ...fixture(),
+      balance: { text: "余额 ¥1.20", low: true },
+      workDir: "/Users/alice/Desktop/接上AI工作区",
+    }));
+
+    render(<App />);
+    expect(await screen.findByText(/当前账户余额偏低/)).toBeInTheDocument();
+
+    const workDirCard = screen.getByRole("region", { name: "命令行工作目录" });
+    expect(workDirCard).toHaveTextContent("接上AI工作区");
+    await userEvent.click(within(workDirCard).getByRole("button", { name: "选择文件夹" }));
+    expect(api.action).toHaveBeenCalledWith("pick-work-dir", undefined, false);
+
+    await userEvent.click(screen.getByRole("button", { name: /复制首句提示词/ }));
+    expect(api.action).toHaveBeenCalledWith("copy-first-prompt");
+
+    await userEvent.click(screen.getByRole("button", { name: "设置" }));
+    await userEvent.click(await screen.findByRole("button", { name: "复制诊断信息" }));
+    expect(api.action).toHaveBeenCalledWith("copy-report");
   });
 });

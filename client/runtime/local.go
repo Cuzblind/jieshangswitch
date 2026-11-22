@@ -44,6 +44,9 @@ func configuredSecret(agent, origin string) (string, bool) {
 		}
 		base, _ := v.Env["ANTHROPIC_BASE_URL"].(string)
 		tok, _ := v.Env["ANTHROPIC_AUTH_TOKEN"].(string)
+		if tok == "" {
+			tok, _ = v.Env["ANTHROPIC_API_KEY"].(string)
+		}
 		if strings.TrimSuffix(base, "/") != origin || tok == "" {
 			return "", false
 		}

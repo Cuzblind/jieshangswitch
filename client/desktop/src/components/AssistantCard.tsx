@@ -228,7 +228,8 @@ export function AssistantCard({
   const missing = s?.state === "nocli";
   const disabled = s?.state === "disabled";
   const needsRepair = ["broken", "offline", "expired", "conflict"].includes(s?.state ?? "");
-  // Left: the next step, which is opening the CLI once everything works.
+  // GUI-first: once connected on macOS/Windows, the primary CTA opens or installs
+  // the official desktop app while keeping the CLI terminal one click away.
   const action: Action =
     needsInstall || missing
       ? "install-suite"
@@ -260,6 +261,7 @@ export function AssistantCard({
   const failure = tool?.cliInstall?.failure || tool?.guiInstall?.failure;
   const off = busy || unavailable;
   const desktopReady = ready && !guiChecking && !!tool?.guiInstalled;
+  const desktopInstallPrimary = ready && needsDesktop && !task?.busy;
   const pending = !tool || checking;
   const showCheck = !checking && !!s && !missing && !needsInstall && s.state !== "none";
   const primaryLeadingIcon = checking
@@ -272,7 +274,7 @@ export function AssistantCard({
           ? Wrench
           : ArrowUpRight;
 
-  const isPrimaryCta = !desktopReady && !demotePrimary;
+  const isPrimaryCta = !desktopReady && !desktopInstallPrimary && !demotePrimary;
 
   return (
     <Elevated offset={2} shadowLevel={2} className="flex flex-col rounded-xl">
@@ -325,7 +327,7 @@ export function AssistantCard({
                 available={tool?.guiAvailable ?? true}
                 pending={!tool || guiChecking}
                 install={
-                  needsDesktop
+                  needsDesktop && !desktopInstallPrimary
                     ? { name, disabled: off || !!task?.busy, onClick: () => act("install-suite", agent) }
                     : undefined
                 }
@@ -385,17 +387,6 @@ export function AssistantCard({
 
           <CardFooter className="mt-auto flex flex-col items-stretch gap-2 p-0 pt-2">
             <div className="flex flex-wrap items-center gap-2">
-              <Button
-                className={cn("flex-1", isPrimaryCta && "primary")}
-                variant={isPrimaryCta ? "primary" : "tertiary"}
-                loading={!!task?.busy}
-                leadingIcon={task?.busy ? undefined : primaryLeadingIcon}
-                disabled={off || checking || !!task?.busy || !s || disabled || s.state === "checking"}
-                onClick={() => act(action, agent)}
-              >
-                {label}
-                <span className="sr-only"> · {name}</span>
-              </Button>
               {desktopReady && (
                 <Button
                   className="primary flex-1"
@@ -408,6 +399,29 @@ export function AssistantCard({
                   <span className="sr-only"> · {name}</span>
                 </Button>
               )}
+              {desktopInstallPrimary && (
+                <Button
+                  className="primary flex-1"
+                  variant="primary"
+                  leadingIcon={Download}
+                  disabled={off || !!task?.busy}
+                  onClick={() => act("install-suite", agent)}
+                >
+                  安装桌面版
+                  <span className="sr-only"> · {name}</span>
+                </Button>
+              )}
+              <Button
+                className={cn("flex-1", isPrimaryCta && "primary")}
+                variant={isPrimaryCta ? "primary" : "tertiary"}
+                loading={!!task?.busy}
+                leadingIcon={task?.busy ? undefined : primaryLeadingIcon}
+                disabled={off || checking || !!task?.busy || !s || disabled || s.state === "checking"}
+                onClick={() => act(action, agent)}
+              >
+                {label}
+                <span className="sr-only"> · {name}</span>
+              </Button>
             </div>
 
             {showCheck && (

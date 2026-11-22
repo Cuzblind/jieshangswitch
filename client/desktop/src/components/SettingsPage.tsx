@@ -1,5 +1,5 @@
 import { useRef } from "react";
-import { Monitor, Moon, RotateCcw, Sun } from "lucide-react";
+import { Check, Copy, Monitor, Moon, RotateCcw, Sun } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -51,8 +51,10 @@ export function SettingsPage({
   checkedAt,
   installing,
   disabled,
+  reportCopied = false,
   onClientUpdate,
   onToolUpdates,
+  onCopyReport,
   onRestore,
 }: {
   version?: string;
@@ -64,8 +66,10 @@ export function SettingsPage({
   checkedAt?: string;
   installing: boolean;
   disabled: boolean;
+  reportCopied?: boolean;
   onClientUpdate: () => void;
   onToolUpdates: () => void;
+  onCopyReport?: () => void;
   onRestore: () => void;
 }) {
   const { mode, setMode } = useTheme();
@@ -164,6 +168,30 @@ export function SettingsPage({
           </SettingRow>
         </Card>
       </Elevated>
+
+      {onCopyReport && (
+        <Elevated offset={2} shadowLevel={2} className="rounded-xl">
+          <Card className="rounded-xl px-5 py-4">
+            <h2 className={cn(typeClass("subtitle"), "mb-1 mt-0 text-foreground")} style={{ fontVariationSettings: fontWeights.semibold }}>
+              诊断与排障
+            </h2>
+            <SettingRow
+              title="复制脱敏诊断信息"
+              note="仅包含系统版本、助手状态、当前线路与安装日志，自动隐藏账号密码和密钥，可直接发给客服快速排障。"
+            >
+              <Button
+                variant="tertiary"
+                size="compact"
+                leadingIcon={reportCopied ? Check : Copy}
+                disabled={disabled}
+                onClick={onCopyReport}
+              >
+                {reportCopied ? "已复制诊断信息" : "复制诊断信息"}
+              </Button>
+            </SettingRow>
+          </Card>
+        </Elevated>
+      )}
 
       <Elevated offset={2} shadowLevel={2} className="rounded-xl">
         <Card className="rounded-xl px-5 py-4">

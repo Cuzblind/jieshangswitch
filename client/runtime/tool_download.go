@@ -32,13 +32,41 @@ var downloadHosts = map[string]bool{
 	// where claude.ai is geo-blocked. Package integrity is still enforced after
 	// download by the MSIX identity/signature and macOS codesign/spctl checks.
 	"claudeapp.agentsmirror.com": true, "codexapp.agentsmirror.com": true,
+	"claudeapp-r2.agentsmirror.com": true, "codexapp-r2.agentsmirror.com": true,
 	// Presigned redirect target of the mirror's mainland-China object-storage node.
 	"fgws3-ocloud.ihep.ac.cn": true,
 }
 
+func isAgentsMirrorSubdomain(host string) bool {
+	if !strings.HasSuffix(host, ".agentsmirror.com") {
+		return false
+	}
+	sub := strings.TrimSuffix(host, ".agentsmirror.com")
+	if sub == "" || strings.Contains(sub, ".") {
+		return false
+	}
+	return strings.HasPrefix(sub, "claudeapp") || strings.HasPrefix(sub, "codexapp")
+}
+
 func allowedDownloadURL(raw string) bool {
 	u, err := url.Parse(raw)
-	return err == nil && u.Scheme == "https" && u.User == nil && u.Port() == "" && u.Fragment == "" && downloadHosts[strings.ToLower(u.Hostname())]
+	if err != nil || u.Scheme != "https" || u.User != nil || u.Port() != "" || u.Fragment != "" {
+		return false
+	}
+	host := strings.ToLower(u.Hostname())
+	return downloadHosts[host] || isAgentsMirrorSubdomain(host)
+}
+
+// allowedOverrideMirrorURL allows HTTPS URLs configured by the site operator in
+// <origin>/client-dist/gui-mirrors.json (e.g. a reverse proxy or CDN). Package
+// safety still relies unconditionally on OS signature verification after download.
+func allowedOverrideMirrorURL(raw string) bool {
+	u, err := url.Parse(raw)
+	if err != nil || u.Scheme != "https" || u.User != nil || u.Port() != "" || u.Fragment != "" {
+		return false
+	}
+	host := strings.ToLower(u.Hostname())
+	return host != "" && host != "localhost" && !strings.HasPrefix(host, "127.") && host != "::1"
 }
 
 // renameWithRetry tolerates antivirus software briefly holding the replaced
@@ -58,8 +86,12 @@ func renameWithRetry(oldpath, newpath string) error {
 }
 
 func newDownloadClient() *http.Client {
-	return &http.Client{Transport: &http.Transport{Proxy: http.ProxyFromEnvironment, ResponseHeaderTimeout: 15 * time.Second, TLSHandshakeTimeout: 10 * time.Second, IdleConnTimeout: 30 * time.Second}, CheckRedirect: func(r *http.Request, via []*http.Request) error {
-		if len(via) >= 5 || !allowedDownloadURL(r.URL.String()) {
+	return newDownloadClientWithAllow(allowedDownloadURL)
+}
+
+func newDownloadClientWithAllow(allow func(string) bool) *http.Client {
+	return &http.Client{Transport: &http.Transport{Proxy: systemAwareProxy, ResponseHeaderTimeout: 15 * time.Second, TLSHandshakeTimeout: 10 * time.Second, IdleConnTimeout: 30 * time.Second}, CheckRedirect: func(r *http.Request, via []*http.Request) error {
+		if len(via) >= 5 || !allow(r.URL.String()) {
 			return errors.New("download redirect rejected")
 		}
 		return nil
@@ -264,11 +296,22 @@ func (d *toolDownloader) file(ctx context.Context, raw, checksum string, progres
 					break
 				}
 				read += int64(n)
-				if time.Since(lastUpdate) >= 500*time.Millisecond {
-					speed := float64(read-offset) / time.Since(started).Seconds() / (1 << 20)
+				if lastUpdate.IsZero() || time.Since(lastUpdate) >= 300*time.Millisecond {
+					elapsed := time.Since(started).Seconds()
+					speed := 0.0
+					if elapsed > 0.05 {
+						speed = float64(read-offset) / elapsed / (1 << 20)
+					}
 					line := fmt.Sprintf("正在下载：%.1f MB", float64(read)/(1<<20))
 					if total > 0 {
-						line += fmt.Sprintf(" / %.1f MB", float64(total+offset)/(1<<20))
+						full := total + offset
+						pct := int(float64(read) * 100 / float64(full))
+						if pct < 0 {
+							pct = 0
+						} else if pct > 100 {
+							pct = 100
+						}
+						line = fmt.Sprintf("正在下载：%.1f / %.1f MB（%d%%）", float64(read)/(1<<20), float64(full)/(1<<20), pct)
 					}
 					progress(line + " · " + strconv.FormatFloat(speed, 'f', 1, 64) + " MB/s")
 					lastUpdate = time.Now()

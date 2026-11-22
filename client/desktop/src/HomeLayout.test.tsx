@@ -59,13 +59,15 @@ beforeEach(() => {
 });
 
 describe("home layout", () => {
-  it("offers the desktop install where the desktop version would be", async () => {
+  it("promotes desktop install as the primary action while keeping CLI usable", async () => {
     api.state.mockResolvedValue(fixture({ tools: [tool({ guiInstalled: false, guiVersion: undefined })] }));
     render(<App />);
     const claude = await screen.findByRole("article", { name: "Claude Code" });
-    const row = within(claude).getByText("桌面版").closest("li") as HTMLElement;
-    await userEvent.click(within(row).getByRole("button", { name: "安装桌面版 · Claude Code" }));
+    const installBtn = within(claude).getByRole("button", { name: "安装桌面版 · Claude Code" });
+    expect(installBtn).toHaveClass("primary");
+    await userEvent.click(installBtn);
     expect(api.action).toHaveBeenCalledWith("install-suite", "claude", false);
+    expect(within(claude).getByRole("button", { name: "打开命令行 · Claude Code" })).toBeEnabled();
     expect(screen.queryByText(/补装桌面版/)).not.toBeInTheDocument();
   });
 
@@ -78,18 +80,20 @@ describe("home layout", () => {
     expect(names(codex).filter((n) => n.includes("一键修复"))).toHaveLength(1);
   });
 
-  it("opens the CLI on the left and the desktop app on the right", async () => {
+  it("opens the desktop app as the primary left action and keeps CLI on the right", async () => {
     api.state.mockResolvedValue(fixture());
     render(<App />);
     const claude = await screen.findByRole("article", { name: "Claude Code" });
     const list = names(claude);
-    expect(list.indexOf("打开命令行 · Claude Code")).toBeGreaterThanOrEqual(0);
-    expect(list.indexOf("打开命令行 · Claude Code")).toBeLessThan(list.indexOf("打开桌面版 · Claude Code"));
+    expect(list.indexOf("打开桌面版 · Claude Code")).toBeGreaterThanOrEqual(0);
+    expect(list.indexOf("打开桌面版 · Claude Code")).toBeLessThan(list.indexOf("打开命令行 · Claude Code"));
+    expect(within(claude).getByRole("button", { name: "打开桌面版 · Claude Code" })).toHaveClass("primary");
+    expect(within(claude).getByRole("button", { name: "打开命令行 · Claude Code" })).not.toHaveClass("primary");
     expect(list.some((n) => n.includes("打开终端") || n.includes("检查更新"))).toBe(false);
-    await userEvent.click(within(claude).getByRole("button", { name: "打开命令行 · Claude Code" }));
-    expect(api.action).toHaveBeenLastCalledWith("launch", "claude", false);
     await userEvent.click(within(claude).getByRole("button", { name: "打开桌面版 · Claude Code" }));
     expect(api.action).toHaveBeenLastCalledWith("launch-gui", "claude", false);
+    await userEvent.click(within(claude).getByRole("button", { name: "打开命令行 · Claude Code" }));
+    expect(api.action).toHaveBeenLastCalledWith("launch", "claude", false);
   });
 
   it("checks every assistant and the client from one button at the top", async () => {

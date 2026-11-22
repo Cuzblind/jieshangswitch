@@ -41,6 +41,8 @@ type DesktopRequest struct {
 	Tier string `json:"tier,omitempty"`
 	// Range selects the usage time window (24h / 7d / 30d / 90d) for usage-load.
 	Range string `json:"range,omitempty"`
+	// WorkDir sets the CLI launch working directory for pick-work-dir / set-work-dir.
+	WorkDir string `json:"workDir,omitempty"`
 }
 
 type DesktopState struct {
@@ -49,6 +51,8 @@ type DesktopState struct {
 	Balance      *Balance                          `json:"balance,omitempty"`
 	AccountLabel string                            `json:"accountLabel,omitempty"`
 	Workspace    *WorkspaceInfo                    `json:"workspace,omitempty"`
+	WorkDir      string                            `json:"workDir,omitempty"`
+	RecentDirs   []string                          `json:"recentDirs,omitempty"`
 	Today        *TodayUsageSummary                `json:"today,omitempty"`
 	Usage        *UsageSnapshot                    `json:"usage,omitempty"`
 	Catalogs     map[string]*DesktopCatalogPayload `json:"catalogs,omitempty"`
@@ -96,12 +100,13 @@ func DesktopEnv() (Env, error) {
 	e := baseEnv()
 	e.Origin, e.Web = origin, origin
 	tools := newToolManager()
+	tools.origin = origin
 	e.FindCLI = tools.cliReady
 	e.InstallDesktop = tools.install
 	e.InstallCLI = func(agent string) error { return tools.installCLI(context.Background(), agent, false, func(string) {}) }
 	e.ToolSnapshot, e.InspectTools, e.CheckToolUpdates = tools.snapshot, tools.inspect, tools.checkUpdates
 	e.InstallDiagnostics = tools.diagnostics
-	e.Launch, e.LaunchGUI = tools.launchCLI, tools.launchGUI
+	e.Launch, e.LaunchGUI, e.GUIRunning = tools.launchCLI, tools.launchGUI, tools.guiRunning
 	e.Edited = func() bool { return editedSinceWrite() || desktopGUIEdited() }
 	e.Restore = func(confirm bool) (bool, error) {
 		if _, err := readGUIBackups(); err != nil {
@@ -189,9 +194,10 @@ func (a *App) DesktopState() DesktopState {
 		}
 	}
 	a.mu.Unlock()
+	workDir, recentDirs := workDirSnapshot()
 	return DesktopState{
 		View: s.View, Statuses: s.Statuses, Balance: s.Balance,
-		AccountLabel: accountLabel, Workspace: workspace, Today: today, Usage: usage, Catalogs: catalogs,
+		AccountLabel: accountLabel, Workspace: workspace, WorkDir: workDir, RecentDirs: recentDirs, Today: today, Usage: usage, Catalogs: catalogs,
 		Version: s.Version, OS: s.OS, Authorized: s.Authorized, Support: s.Support,
 		QQ: supportQQ(), Email: supportEmail(), Report: a.supportReport(), Tools: tools, InstallTasks: a.installTaskSnapshot(), ToolUpdates: a.updateSnapshot(), Prompts: promptSnapshot(), MCP: mcpSnapshot(), Skills: skillSnapshot(),
 	}
@@ -312,6 +318,20 @@ func (a *App) DesktopAction(r DesktopRequest) error {
 		if err := a.env.Open(a.web() + "/account"); err != nil {
 			return errors.New("没能打开浏览器，请访问 jieshangai.com")
 		}
+	case "open-pricing":
+		if err := a.env.Open(a.web() + "/models"); err != nil {
+			return errors.New("没能打开浏览器，请访问 jieshangai.com/models")
+		}
+	case "pick-work-dir", "set-work-dir":
+		chosen, _, err := setWorkDir(r.WorkDir)
+		if err != nil {
+			return err
+		}
+		label := chosen
+		if idx := strings.LastIndexAny(chosen, `/\`); idx >= 0 && idx+1 < len(chosen) {
+			label = chosen[idx+1:]
+		}
+		a.setView(View{Screen: "home", Notice: "已切换命令行工作目录：" + label})
 	case "support":
 		if !hasSupport() {
 			return errors.New("暂时没有可用的客服联系方式")
@@ -402,10 +422,23 @@ func (a *App) DesktopAction(r DesktopRequest) error {
 			a.setView(errorView("reauth", r.Agent))
 		}
 		_ = a.desktopCheck(r.Agent)
+		guiAutoStarted := false
 		if secret, ok := a.env.Configured(r.Agent, a.origin); ok {
 			a.syncDesktopCatalog(r.Agent, secret)
+			if a.shouldAutoInstallGUI(r.Agent) {
+				if err := a.startDesktopInstall(r.Agent, "gui"); err == nil {
+					guiAutoStarted = true
+				}
+			}
 		}
 		a.desktopSuccess(r.Agent)
+		if guiAutoStarted && a.getView().Screen == "home" {
+			a.setView(View{
+				Screen: "home",
+				Agent:  r.Agent,
+				Notice: agentName(r.Agent) + " 已接通，正在后台为你安装官方桌面版……",
+			})
+		}
 		a.desktopRefresh()
 	case "install":
 		err := a.installDesktopComponent(r.Agent, "cli")
@@ -483,7 +516,11 @@ func (a *App) DesktopAction(r DesktopRequest) error {
 			a.syncDesktopCatalog(r.Agent, secret)
 		}
 		a.desktopRefresh()
-		a.setView(View{Screen: "home", Agent: r.Agent, Notice: "已将 " + agentName(r.Agent) + " 切到「" + label + "」线路，下一个任务生效。"})
+		notice := "已将 " + agentName(r.Agent) + " 切到「" + label + "」线路，下一个任务生效。"
+		if a.env.GUIRunning != nil && a.env.GUIRunning(r.Agent) {
+			notice = "已将 " + agentName(r.Agent) + " 切到「" + label + "」线路；检测到桌面版正在运行，请退出并重开以同步最新模型列表。"
+		}
+		a.setView(View{Screen: "home", Agent: r.Agent, Notice: notice})
 	case "repair", "logout-confirm":
 		previous := a.getView()
 		a.setView(working(r.Agent, "正在修复 "+agentName(r.Agent)+"……"))
@@ -516,10 +553,23 @@ func (a *App) DesktopAction(r DesktopRequest) error {
 			a.setView(errorView("reauth", r.Agent))
 		}
 		_ = a.desktopCheck(r.Agent)
+		guiAutoStarted := false
 		if secret, ok := a.env.Configured(r.Agent, a.origin); ok {
 			a.syncDesktopCatalog(r.Agent, secret)
+			if a.shouldAutoInstallGUI(r.Agent) {
+				if err := a.startDesktopInstall(r.Agent, "gui"); err == nil {
+					guiAutoStarted = true
+				}
+			}
 		}
 		a.desktopSuccess(r.Agent)
+		if guiAutoStarted && a.getView().Screen == "home" {
+			a.setView(View{
+				Screen: "home",
+				Agent:  r.Agent,
+				Notice: agentName(r.Agent) + " 已接通，正在后台为你安装官方桌面版……",
+			})
+		}
 		a.desktopRefresh()
 	case "restore":
 		v := View{Screen: "confirm", Line: "这会恢复 Claude 和 Codex 命令行及桌面版的接入设置，并停用接上AI添加的 MCP 服务和 Skills，不会删除助手或你的文件。", Button: "全部恢复", Action: "restore-confirm", Second: "先不", Second2: "home", Note: "只恢复这台电脑。网上停用连接请前往我的账户。"}

@@ -66,11 +66,12 @@ func launch(agent, secret string) error {
 		return err
 	}
 	f := filepath.Join(dir, agent+".command")
+	workDir := resolveLaunchWorkDir()
 	script := "#!/bin/sh\nexport PATH=" + quote(augmentedPath()) + "\n"
 	if agent == "codex" {
 		script += "[ -f \"$HOME/.jieshangai/codex.env\" ] && . \"$HOME/.jieshangai/codex.env\"\n"
 	}
-	script += "cd \"$HOME\"\nrm -f -- \"$0\"\nrmdir -- " + quote(dir) + "\nexec " + agent + "\n"
+	script += "cd " + quote(workDir) + " || cd \"$HOME\"\nrm -f -- \"$0\"\nrmdir -- " + quote(dir) + "\nexec " + agent + "\n"
 	if err := os.WriteFile(f, []byte(script), 0o700); err != nil {
 		return err
 	}

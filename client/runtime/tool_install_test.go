@@ -171,7 +171,7 @@ func TestMirrorGUIReleaseURLs(t *testing.T) {
 	for _, tc := range []struct{ goos, arch, agent, url, format string }{
 		{"windows", "amd64", "claude", "https://claudeapp.agentsmirror.com/latest/win-x64", "msix"},
 		{"windows", "arm64", "codex", "https://codexapp.agentsmirror.com/latest/win-arm64", "msix"},
-		{"darwin", "arm64", "claude", "https://claudeapp.agentsmirror.com/latest/mac-arm64", "dmg"},
+		{"darwin", "arm64", "claude", "https://claudeapp.agentsmirror.com/latest/mac", "dmg"},
 		{"darwin", "amd64", "codex", "https://codexapp.agentsmirror.com/latest/mac-intel", "dmg"},
 	} {
 		r, err := mirrorGUIRelease(tc.goos, tc.arch, tc.agent)

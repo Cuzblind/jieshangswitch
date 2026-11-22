@@ -36,11 +36,15 @@ type ToolStatus struct {
 
 type toolManager struct {
 	root, goos, arch string
+	origin           string
 	download         *toolDownloader
 	mu               sync.Mutex
 	nodeMu           sync.Mutex
 	configOnce       sync.Once
 	guiMu            sync.Mutex
+	mirrorMu         sync.Mutex
+	mirrorCache      map[string]map[string]string
+	mirrorCheckedAt  time.Time
 	states           map[string]ToolStatus
 	entries          map[string]toolEntry
 	probed           map[string]time.Time

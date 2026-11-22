@@ -326,7 +326,12 @@ function Write-ClaudeSettings([string]$Path, [string]$Base, [string]$Secret) {
   }
   Set-NoteProperty $data.env 'ANTHROPIC_BASE_URL' $Base
   Set-NoteProperty $data.env 'ANTHROPIC_AUTH_TOKEN' $Secret
-  Set-NoteProperty $data.env 'ANTHROPIC_API_KEY' $Secret
+  if ($null -ne $data.env.PSObject.Properties['ANTHROPIC_API_KEY']) {
+    $data.env.PSObject.Properties.Remove('ANTHROPIC_API_KEY')
+  }
+  Set-NoteProperty $data.env 'CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC' '1'
+  Set-NoteProperty $data.env 'DISABLE_TELEMETRY' '1'
+  Set-NoteProperty $data.env 'DISABLE_ERROR_REPORTING' '1'
   $json = ConvertTo-Json -InputObject $data -Depth 100
   Write-Utf8File $Path ($json.TrimEnd() + "`n")
   Write-RecordedWrite $Path

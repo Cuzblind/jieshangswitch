@@ -209,8 +209,19 @@ func TestWriteAndClear(t *testing.T) {
 		t.Fatal(err)
 	}
 	raw, _ := os.ReadFile(p.ClaudeSettings())
-	if !strings.Contains(string(raw), `"ANTHROPIC_BASE_URL": "https://relay.example.com"`) {
-		t.Fatalf("bad claude settings: %s", raw)
+	for _, want := range []string{
+		`"ANTHROPIC_BASE_URL": "https://relay.example.com"`,
+		`"ANTHROPIC_AUTH_TOKEN": "` + testSecret + `"`,
+		`"CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1"`,
+		`"DISABLE_TELEMETRY": "1"`,
+		`"DISABLE_ERROR_REPORTING": "1"`,
+	} {
+		if !strings.Contains(string(raw), want) {
+			t.Fatalf("bad claude settings missing %s: %s", want, raw)
+		}
+	}
+	if strings.Contains(string(raw), `"ANTHROPIC_API_KEY"`) {
+		t.Fatalf("claude settings must not keep ANTHROPIC_API_KEY alongside ANTHROPIC_AUTH_TOKEN: %s", raw)
 	}
 	if err := p.WriteCodex(CodexOpts{Origin: testOrigin, Secret: testSecret, Shell: "/bin/zsh"}); err != nil {
 		t.Fatal(err)

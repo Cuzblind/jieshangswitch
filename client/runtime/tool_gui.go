@@ -2,8 +2,11 @@ package clientruntime
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -32,32 +35,121 @@ type caskRelease struct {
 
 const storeUnavailableWindow = 24 * time.Hour
 
-// mirrorGUIRelease points at a third-party mirror of the vendors' own desktop
-// archives. claude.ai geo-blocks mainland-China IPs and downloads.claude.ai is
-// unreachable there, while the mirror serves the official packages from a
-// domestic node (MSIX manifest identity compared with official packages on
-// 2026-10-29; the bytes themselves are not compared). These "latest" URLs carry no
-// checksum; cache reuse depends on ETag revalidation and the package is still
-// gated by validateMSIX / Add-AppxPackage on Windows and codesign/spctl on
-// macOS after download.
-func mirrorGUIRelease(goos, arch, agent string) (guiRelease, error) {
+func guiPlatformKey(goos, arch, agent string) (string, string, error) {
 	osToken := map[string]string{"windows": "win", "darwin": "mac"}[goos]
 	archToken := map[string]string{"amd64": "x64", "arm64": "arm64"}[arch]
 	if goos == "darwin" && arch == "amd64" {
 		archToken = "intel"
-	}
-	host := "https://claudeapp.agentsmirror.com/latest/"
-	if agent == "codex" {
-		host = "https://codexapp.agentsmirror.com/latest/"
 	}
 	format := "dmg"
 	if goos == "windows" {
 		format = "msix"
 	}
 	if osToken == "" || archToken == "" || !validAgent(agent) {
-		return guiRelease{}, errInstallDependency
+		return "", "", errInstallDependency
 	}
-	return guiRelease{URL: host + osToken + "-" + archToken, Format: format}, nil
+	// Claude macOS archive on agentsmirror is a single Universal DMG at /latest/mac.
+	if agent == "claude" && goos == "darwin" {
+		return "mac", format, nil
+	}
+	return osToken + "-" + archToken, format, nil
+}
+
+// mirrorGUIRelease points at a third-party mirror of the vendors' own desktop
+// archives. claude.ai geo-blocks mainland-China IPs and downloads.claude.ai is
+// unreachable there, while the mirror serves the official packages from a
+// domestic/R2 node. These "latest" URLs carry no checksum; cache reuse depends
+// on ETag revalidation and the package is still gated by validateMSIX /
+// Add-AppxPackage on Windows and codesign/spctl on macOS after download.
+func mirrorGUIRelease(goos, arch, agent string) (guiRelease, error) {
+	key, format, err := guiPlatformKey(goos, arch, agent)
+	if err != nil {
+		return guiRelease{}, err
+	}
+	host := "https://claudeapp.agentsmirror.com/latest/"
+	if agent == "codex" {
+		host = "https://codexapp.agentsmirror.com/latest/"
+	}
+	return guiRelease{URL: host + key, Format: format}, nil
+}
+
+// overrideGUIRelease checks an optional operator-maintained JSON file at
+// <origin>/client-dist/gui-mirrors.json (2s timeout, cached 5m, silent when absent).
+// This allows switching mirrors or pointing to a reverse proxy without shipping a
+// new client binary, while keeping OS signature verification mandatory.
+func (m *toolManager) overrideGUIRelease(ctx context.Context, agent string) (guiRelease, bool) {
+	origin := strings.TrimRight(strings.TrimSpace(m.origin), "/")
+	if origin == "" {
+		return guiRelease{}, false
+	}
+	key, format, err := guiPlatformKey(m.goos, m.arch, agent)
+	if err != nil {
+		return guiRelease{}, false
+	}
+	m.mirrorMu.Lock()
+	if time.Since(m.mirrorCheckedAt) < 5*time.Minute {
+		cfg := m.mirrorCache
+		m.mirrorMu.Unlock()
+		return pickOverrideRelease(cfg, agent, key, format)
+	}
+	m.mirrorMu.Unlock()
+
+	fetchCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(fetchCtx, http.MethodGet, origin+"/client-dist/gui-mirrors.json", nil)
+	if err != nil {
+		return guiRelease{}, false
+	}
+	req.Header.Set("User-Agent", "JieshangAI-Installer/0.2")
+	client := &http.Client{
+		Transport: &http.Transport{Proxy: systemAwareProxy, ResponseHeaderTimeout: 2 * time.Second, TLSHandshakeTimeout: 2 * time.Second},
+		CheckRedirect: func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+	resp, err := client.Do(req)
+	var cfg map[string]map[string]string
+	if err == nil {
+		defer resp.Body.Close()
+		if resp.StatusCode == http.StatusOK {
+			_ = json.NewDecoder(io.LimitReader(resp.Body, 64<<10)).Decode(&cfg)
+		}
+	}
+	m.mirrorMu.Lock()
+	m.mirrorCache = cfg
+	m.mirrorCheckedAt = time.Now()
+	m.mirrorMu.Unlock()
+	return pickOverrideRelease(cfg, agent, key, format)
+}
+
+func pickOverrideRelease(cfg map[string]map[string]string, agent, key, format string) (guiRelease, bool) {
+	if cfg == nil {
+		return guiRelease{}, false
+	}
+	agentMap := cfg[agent]
+	if agentMap == nil {
+		return guiRelease{}, false
+	}
+	raw := strings.TrimSpace(agentMap[key])
+	if raw == "" && strings.HasPrefix(key, "mac-") {
+		raw = strings.TrimSpace(agentMap["mac"])
+	}
+	if !allowedOverrideMirrorURL(raw) {
+		return guiRelease{}, false
+	}
+	if strings.HasSuffix(strings.ToLower(raw), ".zip") {
+		format = "zip"
+	}
+	return guiRelease{URL: raw, Format: format}, true
+}
+
+func (m *toolManager) overrideDownloader() *toolDownloader {
+	return &toolDownloader{
+		client: newDownloadClientWithAllow(allowedOverrideMirrorURL),
+		cache:  m.download.cache,
+		allow:  allowedOverrideMirrorURL,
+		slots:  m.download.slots,
+	}
 }
 
 // winget 1.9.x accepts --name for source list. The --source option belongs to
@@ -259,6 +351,13 @@ func (m *toolManager) install(ctx context.Context, agent, component string, prog
 	if component == "cli" {
 		return m.installCLI(ctx, agent, false, progress)
 	}
+	if component == "gui" {
+		m.component(agent, "gui", "running", "正在准备安装官方桌面版", nil)
+		report := func(line string) { m.component(agent, "gui", "running", line, nil); progress("桌面版 · " + line) }
+		err := m.installGUI(ctx, agent, false, report)
+		m.componentError(agent, "gui", err)
+		return err
+	}
 	var wg sync.WaitGroup
 	var mu sync.Mutex
 	var failures []string
@@ -373,5 +472,11 @@ func (m *toolManager) installGUI(ctx context.Context, agent string, update bool,
 		return errors.New("桌面版安装后未通过检测")
 	}
 	return nil
+}
+func (m *toolManager) guiRunning(agent string) bool {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	info, err := inspectGUI(ctx, agent)
+	return err == nil && info.Path != "" && guiIsRunning(info)
 }
 func (m *toolManager) managedCLIPath(agent string) string { return filepath.Join(m.root, "bin", agent) }

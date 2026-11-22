@@ -8,6 +8,7 @@ pub enum Action {
     CopyQq,
     CopyEmail,
     CopyReport,
+    CopyFirstPrompt,
     Refresh,
     Home,
     Connect,
@@ -27,8 +28,11 @@ pub enum Action {
     LogoutConfirm,
     Support,
     Recharge,
+    OpenPricing,
     OpenWeb,
     SwitchAccount,
+    PickWorkDir,
+    SetWorkDir,
     UsageLoad,
     CatalogLoad,
     PromptsList,
@@ -54,6 +58,7 @@ impl Action {
             Self::CopyQq => "copy-qq",
             Self::CopyEmail => "copy-email",
             Self::CopyReport => "copy-report",
+            Self::CopyFirstPrompt => "copy-first-prompt",
             Self::Refresh => "refresh",
             Self::Home => "home",
             Self::Connect => "connect",
@@ -73,8 +78,11 @@ impl Action {
             Self::LogoutConfirm => "logout-confirm",
             Self::Support => "support",
             Self::Recharge => "recharge",
+            Self::OpenPricing => "open-pricing",
             Self::OpenWeb => "open-web",
             Self::SwitchAccount => "switch-account",
+            Self::PickWorkDir => "pick-work-dir",
+            Self::SetWorkDir => "set-work-dir",
             Self::UsageLoad => "usage-load",
             Self::CatalogLoad => "catalog-load",
             Self::PromptsList => "prompts-list",
@@ -97,6 +105,10 @@ impl Action {
     /// The zip path comes only from the native picker, never from the page.
     pub fn picks_skill_zip(self) -> bool {
         matches!(self, Self::SkillImportZip)
+    }
+    /// Opens the native folder picker for the CLI working directory.
+    pub fn picks_work_dir(self) -> bool {
+        matches!(self, Self::PickWorkDir)
     }
     pub fn requires_agent(self) -> bool {
         matches!(

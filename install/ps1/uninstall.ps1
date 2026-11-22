@@ -1,4 +1,4 @@
-# 接上AI · 清掉本站写进这台电脑的连接（不卸载官方 CLI）
+﻿# 接上AI · 清掉本站写进这台电脑的连接（不卸载官方 CLI）
 # 有备份且指纹对得上：换回装之前的原样；否则只去掉我方条目。
 # 与 client/core（Restore）、uninstall.sh 同一逻辑、同一份 backup-manifest.tsv。
 # 写入后用户又改过：打印一行并要求确认（RELAY_CONFIRM=1 或在窗口输入 y）。
@@ -105,7 +105,14 @@ function Remove-ClaudeKeys([string]$Path) {
   if ([string]::IsNullOrWhiteSpace($raw)) { return }
   $data = $raw | ConvertFrom-Json
   if ($null -eq $data -or $data -is [System.Array]) { return }
-  $drop = @('ANTHROPIC_BASE_URL', 'ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_API_KEY')
+  $drop = @(
+    'ANTHROPIC_BASE_URL',
+    'ANTHROPIC_AUTH_TOKEN',
+    'ANTHROPIC_API_KEY',
+    'CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC',
+    'DISABLE_TELEMETRY',
+    'DISABLE_ERROR_REPORTING'
+  )
   if ($data.PSObject.Properties['env'] -and $null -ne $data.env -and -not ($data.env -is [System.Array])) {
     foreach ($name in $drop) {
       $prop = $data.env.PSObject.Properties[$name]
