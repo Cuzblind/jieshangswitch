@@ -1,0 +1,48 @@
+{
+  "repository": "https://github.com/farion1231/cc-switch",
+  "tag": "v4.0.20",
+  "commit": "85ad4969b3399500baaea9d46b1e08f87aba80e1",
+  "license": "MIT",
+  "imported_files": [
+    {
+      "path": "LICENSE",
+      "sha256": "912b6a597d10c43b40a0909349ed95b052b17efb6502b4898e1b35dafb896755"
+    },
+    {
+      "path": "src/components/ui/button.tsx",
+      "sha256": "08c35b15c60b0223bfff233746e695637a9b0b644616428948e1bc1ee983e613"
+    },
+    {
+      "path": "src/components/ui/card.tsx",
+      "sha256": "76870568f0a208a0dab76d88109a848cf466c78f2d61d824d0179d9734d7120a"
+    },
+    {
+      "path": "src/components/ui/dialog.tsx",
+      "sha256": "9151be8002ee10348fc6713927afd57b040704d96aecf7619483555a36062d5d"
+    },
+    {
+      "path": "src/lib/utils.ts",
+      "sha256": "5f48d948468580b3ad2b8343e8923ba1e83da884a472982d87652db2044ec4ef"
+    },
+    {
+      "path": "src-tauri/src/main.rs",
+      "sha256": "ef98bc2f6a0c8844631bcd8b33d362252748b89c848cdf051943d73d0a7a2f5a"
+    },
+    {
+      "path": "src-tauri/build.rs",
+      "sha256": "5eb7ce78521500c25981e169e4561bc0b5975f4e910017978b4855500be6bd12"
+    },
+    {
+      "path": "src-tauri/common-controls.manifest",
+      "sha256": "ceda76971692615690d8dde0b73e2cad17b0b28992ddab7f2ae30e8c362768de"
+    },
+    {
+      "path": "src/icons/extracted/openai.svg",
+      "sha256": "f3cf560e84bd85915e32b887cb2abd323529be62d8b4001d2f778669b77eda35"
+    }
+  ],
+  "adapted_files": [
+    "src-tauri/src/main.rs",
+    "src-tauri/build.rs"
+  ]
+}

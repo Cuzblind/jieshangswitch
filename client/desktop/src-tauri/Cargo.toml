@@ -1,0 +1,41 @@
+[package]
+name = "jieshangai"
+version = "0.2.0-beta.11"
+description = "接上AI · Claude Code 与 Codex 接入助手"
+authors = ["接上AI", "Jason Young (CC Switch)"]
+license = "MIT"
+edition = "2021"
+rust-version = "1.90.0"
+
+[lib]
+name = "jieshangai_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2.4.0", features = [] }
+serde_json = "1"
+
+[dependencies]
+tauri = { version = "2.8.2", features = ["macos-private-api"] }
+tauri-plugin-deep-link = "2"
+tauri-plugin-updater = "2"
+tauri-plugin-clipboard-manager = "2"
+tauri-plugin-dialog = "2"
+tauri-plugin-single-instance = "2"
+tauri-plugin-window-state = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["sync", "time"] }
+url = "2.5"
+
+# deep-link 2.6.2 constructs the two-field ParseOption; rust-ini >=0.21.2
+# adds required fields. Keep Linux desktop registration on the compatible API.
+[target.'cfg(target_os = "linux")'.dependencies]
+rust-ini = "=0.21.1"
+
+[profile.release]
+codegen-units = 16
+lto = "thin"
+opt-level = "s"
+panic = "unwind"
+strip = "symbols"

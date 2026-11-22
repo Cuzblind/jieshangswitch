@@ -1,0 +1,19 @@
+{
+  "_note": "Single source shared by web-app and the desktop client (client/app/shared-copy.json is a go:generate copy; TestSharedCopyInSync fails on drift). {origin} = site root. D27: support.qq and support.email both empty = hide every contact button; QQ is the only channel for now. D33: debtDeduct is the one switch for the owed-balance wording (「续上时先扣」 until payments open, then 「下次充值先扣」). D35/D16: debtPrompt is the CS-on owed-balance prompt tail (「欠 ¥X，联系客服续上后先扣」); debtPromptOff is the CS-off tail (「续上后先扣」).",
+  "restoreCommand": {
+    "mac": "curl -fsSL {origin}/u | bash",
+    "win": "irm {origin}/u | iex"
+  },
+  "support": {
+    "qq": "2088199761",
+    "email": "",
+    "lines": [
+      "加客服 QQ，说一下遇到了什么。余额用完了，也在这里联系客服续上。",
+      "工作时间：工作日 10:00–19:00"
+    ]
+  },
+  "debtDeduct": "续上时先扣",
+  "debtPrompt": "联系客服续上后先扣",
+  "tryFirstPrompt": "用三句话告诉我你能帮我做什么",
+  "debtPromptOff": "续上后先扣"
+}

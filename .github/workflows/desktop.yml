@@ -1,0 +1,120 @@
+name: 接上AI Desktop
+
+on:
+  workflow_dispatch:
+    inputs:
+      offline:
+        description: Include complete offline CLI and GUI resources (large download)
+        type: boolean
+        default: false
+  pull_request:
+    paths: ['client/**', 'install/**', 'web-app/src/lib/shared-copy.json', '.github/workflows/desktop.yml']
+  push:
+    branches: [main]
+    paths: ['client/**', 'install/**', 'web-app/src/lib/shared-copy.json', '.github/workflows/desktop.yml']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: desktop-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  desktop:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-2022
+            target: x86_64-pc-windows-msvc
+            artifact: jieshangai-win-x64
+          - os: windows-11-arm
+            target: aarch64-pc-windows-msvc
+            artifact: jieshangai-win-arm64
+          - os: macos-15
+            target: aarch64-apple-darwin
+            artifact: jieshangai-mac-arm64
+          - os: macos-15-intel
+            target: x86_64-apple-darwin
+            artifact: jieshangai-mac-x64
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    defaults:
+      run:
+        working-directory: client/desktop
+        shell: bash
+    env:
+      CARGO_BUILD_TARGET: ${{ matrix.target }}
+      CARGO_BUILD_JOBS: '2'
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16
+        with:
+          go-version-file: client/runtime/go.mod
+          cache-dependency-path: |
+            client/runtime/go.sum
+            client/app/go.sum
+      - uses: pnpm/action-setup@v4
+        with:
+          package_json_file: client/desktop/package.json
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: client/desktop/pnpm-lock.yaml
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - name: Install frontend dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Verify source provenance
+        run: pnpm verify:source
+      - name: Typecheck and test renderer
+        run: pnpm typecheck && pnpm test
+      - name: Test configuration core
+        working-directory: client/core
+        run: go test ./...
+      - name: Test shared runtime
+        working-directory: client/runtime
+        run: go test -timeout 25m ./...
+      - name: End-to-end real engine smoke test
+        run: pnpm smoke:engine
+      - name: Build sidecar
+        run: pnpm build:engine
+      - name: Check and test native bridge
+        working-directory: client/desktop/src-tauri
+        run: cargo fmt --check && cargo test --locked
+      - name: Build installer
+        if: ${{ !inputs.offline }}
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          if [ -n "$TAURI_SIGNING_PRIVATE_KEY" ]; then
+            pnpm build --target ${{ matrix.target }} --config '{"bundle":{"createUpdaterArtifacts":true}}'
+          else
+            pnpm build --target ${{ matrix.target }}
+          fi
+      - name: Prepare complete offline resources and build installer
+        if: ${{ inputs.offline }}
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          node scripts/prepare-offline.mjs
+          if [ -n "$TAURI_SIGNING_PRIVATE_KEY" ]; then
+            pnpm build --target ${{ matrix.target }} --config tauri.offline.conf.json --config '{"bundle":{"createUpdaterArtifacts":true}}'
+          else
+            pnpm build --target ${{ matrix.target }} --config tauri.offline.conf.json
+          fi
+      - name: Collect stable download filenames
+        env:
+          DESKTOP_ARTIFACT_NAME: ${{ matrix.artifact }}
+        run: node scripts/collect-installer.mjs
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.artifact }}
+          path: client/desktop/artifacts/*
+          if-no-files-found: error
+

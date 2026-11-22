@@ -1,0 +1,182 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>接上AI</title>
+<style>
+@font-face{font-family:Figtree;src:url(/figtree.woff2) format("woff2");font-weight:300 900;font-display:block;unicode-range:U+0000-00FF,U+2000-206F,U+20AC,U+2122}
+:root{--ink:#0a0a0a;--muted:#8a8a93;--text2:#55555e;--border:#e3e3e8;--surface:#fff;--ok:#059669;--okbg:#ecfdf5;--okbd:#a7f3d0;--bad:#c62828;--badbg:#fdeeee;--badbd:#f6cfcf;--warn:#b45309;--warnbg:#fff4e5}
+*{box-sizing:border-box}
+html,body{margin:0;background:#fff;color:var(--ink);font:15px/1.6 Figtree,"PingFang SC","Noto Sans SC","Microsoft YaHei",system-ui,sans-serif}
+main{max-width:446px;margin:0 auto;padding:22px 28px 28px;min-height:100vh;display:flex;flex-direction:column}
+h2{font-size:20px;font-weight:600;margin:6px 0 12px}
+p{margin:0 0 14px}
+.center{text-align:center}
+.ic{width:52px;height:52px;border-radius:50%;margin:18px auto 14px;display:flex;align-items:center;justify-content:center;background:#f1f1f3;border:1px solid var(--border)}
+.ic svg{width:24px;height:24px}
+.ic.ok{background:var(--okbg);border-color:var(--okbd);color:var(--ok)}
+.ic.grey{background:#f0f0f0;border-color:#f0f0f0;color:#0a0a0a}
+.ic.bad{background:var(--badbg);border-color:var(--badbd);color:var(--bad)}
+.title{font-size:20px;font-weight:600;text-align:center;margin:0 0 6px}
+.title.ok{color:var(--ok)}
+.line{text-align:center;font-size:15px;margin:0 0 22px}
+.note{text-align:center;color:var(--muted);font-size:13px;margin:10px 0 0}
+.card{border:1px solid var(--border);border-radius:12px;padding:16px;margin-bottom:12px}
+.row{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:14px}
+.name{font-size:15px;font-weight:500}
+.badge{font-size:12px;padding:1px 8px;border-radius:999px;background:#efeff1;color:var(--text2);border:1px solid var(--border);white-space:nowrap}
+.badge.ok{color:var(--ok);background:var(--okbg);border-color:var(--okbd)}
+.badge.broken{color:var(--bad);background:var(--badbg);border-color:var(--badbd)}
+button{font:inherit;cursor:pointer}
+.cta{display:flex;width:100%;height:44px;align-items:center;justify-content:center;border-radius:999px;border:0;background:var(--ink);color:#fff;font-size:15px;font-weight:600}
+.cta:hover{background:#262626}
+.outline{display:flex;width:100%;height:42px;align-items:center;justify-content:center;border-radius:999px;border:1px solid #d4d4da;background:#fff;color:var(--ink);font-size:15px;font-weight:500}
+.link{background:none;border:0;color:var(--text2);padding:4px 0;font-size:13px;text-decoration:underline;text-underline-offset:3px}
+.foot{background:none;border:0;color:var(--muted);font-size:12px;text-decoration:underline;text-underline-offset:3px}
+.balance{margin-top:10px;font-size:13px;color:var(--muted);text-align:center}
+.balance.low{color:var(--warn)}
+.balance.low button{color:var(--warn)}
+.balance .bhint.red{color:var(--bad)}
+.balance .bhint{margin-top:4px}
+.balance button{background:none;border:0;color:var(--text2);padding:0;font-size:13px;text-decoration:underline;text-underline-offset:3px}
+.balance .rf{text-decoration:none;margin-left:4px}
+footer{padding-top:14px;text-align:center}
+.spin{width:22px;height:22px;border:2.5px solid #d6d6dc;border-top-color:var(--ink);border-radius:50%;animation:s .9s linear infinite}
+@keyframes s{to{transform:rotate(360deg)}}
+ul.list{margin:8px 0 0;padding-left:20px;color:var(--text2);font-size:13px}
+header{display:flex;align-items:center;gap:8px;font-size:14px;font-weight:500;padding-bottom:14px;margin:0 -28px 14px;padding-left:28px;border-bottom:1px solid var(--border)}
+header svg{fill:#0a0a0a}
+ .steps{display:flex;gap:6px;margin:4px 0 14px}
+.steps div{flex:1;text-align:center;font-size:12px;color:var(--muted)}
+.steps div:before{content:"";display:block;height:3px;border-radius:2px;background:#e3e3e8;margin-bottom:8px}
+.steps div.on{color:#0a0a0a;font-weight:600}
+.steps div.on:before{background:#0a0a0a}
+.hint{background:#f0f0f0;border-radius:8px;padding:9px 12px;font-size:13px;color:var(--text2);margin-bottom:14px}
+.faint{color:var(--muted);font-size:13px;text-align:center;margin:4px 0 0}
+.qq{text-align:center;font-size:20px;font-weight:600;letter-spacing:.5px;margin:10px 0 6px}
+.staffrow{margin-top:12px;border-top:1px dashed var(--border);padding-top:12px;text-align:center;font-size:12px;color:#b4b4bb}
+.staffrow .r{display:flex;justify-content:center;align-items:center;gap:24px;flex-wrap:nowrap;margin-top:4px}
+.back{background:none;border:0;color:var(--muted);font-size:13px;padding:0}
+.staffrow button{background:none;border:0;color:#b4b4bb;font-size:12px;padding:2px 4px}
+.staffrow span{white-space:nowrap;font-family:ui-monospace,Menlo,Consolas,monospace}
+.try{border:1px solid var(--border);border-radius:10px;padding:12px 14px;margin:-8px 0 16px;font-size:15px;text-align:center;background:#fafafa}
+.rt{display:flex;align-items:center;gap:6px}
+.more{position:relative}
+.dots{width:28px;height:28px;display:inline-flex;align-items:center;justify-content:center;background:none;border:0;color:var(--text2);font-size:16px;line-height:1;padding:0;border-radius:8px}
+.dots:hover,.dots.open{background:#efefef}
+.menu{position:absolute;right:0;top:26px;z-index:5;background:#fff;border:1px solid var(--border);border-radius:10px;box-shadow:0 6px 20px rgba(0,0,0,.08);padding:4px;white-space:nowrap}
+.mi{display:block;background:none;border:0;padding:8px 12px;font-size:14px;color:var(--ink);border-radius:6px;width:100%;text-align:left}
+.mi:hover{background:#f1f1f3}
+.staff{margin-top:18px;border-top:1px solid var(--border);padding-top:14px;font-size:12px;color:var(--muted)}
+.staff code{display:block;background:#f1f1f3;border-radius:8px;padding:8px;margin:4px 0 8px;word-break:break-all;font-family:ui-monospace,Menlo,Consolas,monospace;color:var(--ink)}
+.staff button{font-size:12px;margin:0 8px 6px 0;padding:4px 10px;border-radius:8px;border:1px solid var(--border);background:#fff}
+</style>
+</head>
+<body>
+<main id="app"></main>
+<script>
+const S="__SECRET__";
+const LOGO='<svg viewBox="0 0 28 16" style="width:24px;height:14px" aria-hidden="true"><circle cx="5.2" cy="8" r="4.4"/><circle cx="22.8" cy="8" r="4.4"/><path d="M9.6 5.2 L15.2 5.2 L13.2 10.8 L9.6 10.8 Z"/><path d="M17.6 5.2 L19.2 5.2 L19.2 10.8 L15.6 10.8 Z"/></svg>';
+let st=null, showList=false, staff=false, pending=false, menu="", copied="";
+const esc=s=>String(s??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+async function api(path,body){
+  const r=await fetch(path,{method:body?"POST":"GET",headers:{"X-S":S,"Content-Type":"application/json"},body:body?JSON.stringify(body):undefined});
+  if(!r.ok) throw new Error("x");
+  return r.json();
+}
+async function act(action,agent){
+  if(pending) return; pending=true;
+  try{ st=await api("/api/act",{action,agent:agent||""}); render(); }catch(e){} finally{pending=false}
+}
+async function poll(){ try{ st=await api("/api/state"); render(); }catch(e){} setTimeout(poll,700); }
+const btn=(label,action,agent,cls)=>!label?"":`<button class="${cls||"cta"}" data-a="${esc(action)}" data-g="${esc(agent||"")}">${esc(label)}</button>`;
+const footer=()=>st.support?`<footer>${btn("联系客服","support","","foot")}</footer>`:"";
+const I={
+ ok:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M8 12.5l2.6 2.6L16 9.8"/></svg>',
+ bad:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 7.5v5.5"/><path d="M12 16.3v.2"/></svg>',
+ link:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7 0l3-3a5 5 0 0 0-7-7l-1 1"/><path d="M14 11a5 5 0 0 0-7 0l-3 3a5 5 0 0 0 7 7l1-1"/></svg>',
+ dl:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v11"/><path d="M7 10.5l5 5 5-5"/><path d="M5 20h14"/></svg>',
+ chat:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 18l-1 3 3.5-1.5A8 8 0 1 0 5 18z"/></svg>'
+};
+const icon=(k,cls)=>`<div class="ic ${cls||""}">${k==="spin"?'<div class="spin"></div>':I[k]}</div>`;
+function home(){
+  const ss=st.statuses||[];
+  if(!ss.length) return icon("spin");
+  if(!st.authorized && ss.every(s=>s.state==="none"||s.state==="nocli") && !st.balance && st.view.screen==="home") return needsWeb();
+  let h=`<h2>你的助手</h2>`;
+  for(const s of ss){
+    const cls=s.state==="ok"?"ok":(s.state==="broken"||s.state==="disabled"?"broken":"");
+    // W8: 「恢复成原来的样子」 lives in the ⋯ menu (top-right), confirm screen unchanged.
+    const more=s.state==="ok"?`<span class="more"><button class="dots${menu===s.agent?" open":""}" data-a="__menu" data-g="${esc(s.agent)}" aria-label="更多">⋯</button>${menu===s.agent?`<div class="menu">${btn(s.button,s.action,s.agent,"mi")}</div>`:""}</span>`:"";
+    h+=`<div class="card"><div class="row"><span class="name">${esc(s.name)}</span><span class="rt"><span class="badge ${cls}">${esc(s.badge)}</span>${more}</span></div>`;
+    if(s.state==="ok"){
+      h+=btn("帮我打开 "+s.name,"launch",s.agent);
+      h+=`<p class="note">会弹出一个新窗口，直接在里面打字就行。</p>`;
+      if(st.balance) h+=`<div class="balance${st.balance.low&&!st.balance.red?" low":""}">${esc(st.balance.text)}${st.support?` · <button data-a="recharge">去网页充值</button>`:""}${st.balance.hint?`<div class="bhint ${st.balance.red?"red":""}">${esc(st.balance.hint)}</div>`:""}<div class="bhint"><button data-a="spending">看花费明细</button></div></div>`;
+    } else if(s.state==="disabled"){
+      h+=btn(s.button,"noop",s.agent,"outline");
+      if(s.note) h+=`<p class="note">${esc(s.note)}</p>`;
+      if(st.balance) h+=`<div class="balance">${esc(st.balance.text)}<div class="bhint"><button data-a="spending">看花费明细</button></div></div>`;
+    } else h+=btn(s.button,s.action,s.agent,s.state==="none"?"outline":"cta"); // stopped/broken/nocli: black primary
+    h+=`</div>`;
+  }
+  return h+footer();
+}
+// 客户端被直接打开（没有从网页唤起）：一句话 + 一个按钮，别的都不放
+function needsWeb(){
+  // F4 / ACCEPT / ZERO-BASE：无票打开 → 回网页，不强调复制命令
+  return icon("link")+`<p class="line">还差一步：回到网页，我们会自动帮你接好。</p>`+btn("回网页继续","open-web","","cta");
+}
+function support(v){
+  const d=v.data||{};
+  let h=`<div style="margin:-6px 0 6px">${btn("‹ 返回","home","","back")}</div><p class="title">联系客服</p>
+  ${d.qq?`<p class="qq">QQ ${esc(d.qq)}</p>`:""}<p class="faint" style="margin:0 0 14px">${esc(d.line1)}</p>
+  ${d.qq?btn(copied==="qq"?"已复制":v.button,v.action):""}<p class="faint" style="margin-top:6px">${esc(d.line2)}</p>
+  <p class="faint" style="margin-top:16px">${esc(v.line)}</p>
+  <div style="display:flex;justify-content:center;gap:18px;margin-top:2px">${btn(copied==="report"?"已复制":"复制出问题的情况","__copyreport","","link")}${btn(showList?"收起":"看看会发什么","__list","","link")}</div>`;
+  if(showList) h+=`<ul class="list">${(st.diag||[]).map(x=>`<li>${esc(x)}</li>`).join("")}</ul>`;
+  h+=`<div class="staffrow">客服让你点时再点<div class="r">${btn("打开文件夹","open-dir-site","","plain")}${btn("复制一段文字","__copy","","plain")}<span>${esc(String(st.version||"").split("-")[0])}</span></div></div>`;
+  return h;
+}
+function render(){
+  if(!st) return;
+  const v=st.view; let h=(/^Windows/.test(st.os||"")||location.hash==="#native")?"":`<header>${LOGO}<span>接上AI</span></header>`;
+  switch(v.screen){
+    case "home": h+=home(); break;
+    case "working": h+=icon("spin")+`<p class="line">${esc(v.line)}</p>`; break;
+    case "connecting": {
+      const n=+(v.data&&v.data.step||1), L=["装上","接上","试一下"], win=/^Windows/.test(st.os||"");
+      h+=icon("spin")+`<p class="line">${esc(v.line)}</p><div class="steps">${L.map((l,i)=>`<div class="${i+1===n?"on":""}">${esc(l)}</div>`).join("")}</div>`
+        +(n===3?`<p class="faint" style="margin:-6px 0 12px">我们替你试一句话</p>`:"")
+        +`<div class="hint">${win?"电脑会问「是否允许更改」，点「是」。":"电脑可能会问你开机密码，输入就行。"}</div><p class="faint">还在装，别关这个窗口。</p>`+footer(); break; }
+    case "success": {
+      const other=(v.data&&v.data.other)||"";
+      h+=icon("ok","ok")+`<p class="title ok">能用了</p><p class="line">${esc(v.line)}</p>${v.data&&v.data.try?`<div class="try">${esc(v.data.try)}</div>`:""}${btn(v.button,v.action,v.agent)}${v.note?`<p class="note">${esc(v.note)}</p>`:""}${v.second?`<div class="center" style="margin-top:10px">${btn(v.second,v.secondAction,other||v.agent,"link")}</div>`:""}`+footer(); break; }
+    case "confirm": h+=`<div style="height:20px"></div><p class="line">${esc(v.line)}</p>${v.extra?`<p class="line" style="color:var(--text2);font-size:14px">${esc(v.extra)}</p>`:""}${v.note?`<p class="note">${esc(v.note)}</p>`:""}${btn(v.button,v.action,v.agent)}<div class="center" style="margin-top:8px">${btn(v.second,v.secondAction,v.agent,"link")}</div>`; break;
+    case "support": h+=support(v); break;
+    case "done": h+=icon("ok","ok")+`<p class="line">${esc(v.line)}</p>${btn(v.button,v.action,v.agent)}`+footer(); break;
+    case "cli-missing": h+=icon((v.data||{}).kind==="cli"?"bad":"dl",(v.data||{}).kind==="cli"?"bad":"")+`<p class="line">${esc(v.line)}</p>${btn(v.button,v.action,v.agent)}${v.note?`<p class="note">${esc(v.note)}</p>`:""}`+footer(); break;
+    default: h+=(v.data&&v.data.kind==="expired"?icon("link","grey"):icon("bad","bad"))+`<p class="line">${esc(v.line)}</p>${btn(v.button,v.action,v.agent)}${v.second?`<div class="center" style="margin-top:10px">${btn(v.second,v.secondAction,v.agent,"link")}</div>`:""}`+footer();
+  }
+  const el=document.getElementById("app");
+  if(el.dataset.h!==h){el.innerHTML=h;el.dataset.h=h;}
+}
+document.addEventListener("click",e=>{
+  const b=e.target.closest("button[data-a]"); if(!b) return;
+  const a=b.dataset.a;
+  if(a==="__menu"){menu=menu===b.dataset.g?"":b.dataset.g;render();return}
+  menu="";
+  if(a==="__list"){showList=!showList;render();return}
+  if(a==="__copyqq"||a==="__copyreport"){
+    const d=st.view.data||{}, k=a==="__copyqq"?"qq":"report";
+    if(navigator.clipboard) navigator.clipboard.writeText(d[k]||"").then(()=>{copied=k;render();setTimeout(()=>{copied="";render()},1500)}).catch(()=>{});
+    return}
+  if(a==="launch-try"&&st.view.data&&st.view.data.try&&navigator.clipboard) navigator.clipboard.writeText(st.view.data.try).catch(()=>{});
+  if(a==="__copy"){navigator.clipboard&&navigator.clipboard.writeText(st.staff.restore);return}
+  act(a,b.dataset.g);
+});
+poll();
+</script>
+</body>
+</html>

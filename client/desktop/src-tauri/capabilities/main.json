@@ -1,0 +1,6 @@
+{
+  "identifier": "main-desktop",
+  "description": "Only local desktop state events; no shell, filesystem, HTTP, updater or provider permissions.",
+  "windows": ["main"],
+  "permissions": ["core:event:default"]
+}
