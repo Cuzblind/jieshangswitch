@@ -178,23 +178,33 @@ async function main() {
   writeFileSync(claudeSettingsPath, origClaude);
   writeFileSync(codexConfigPath, origCodex);
 
-  // 3) Spawn real engine over JSON Lines stdin/stdout pipes
+  // 3) Spawn real engine over JSON Lines stdin/stdout pipes.
+  // Windows uses case-insensitive "Path" in process.env; normalize to a single key
+  // so binDir is never shadowed by a duplicate Path entry.
+  const childEnv = { ...process.env };
+  let existingPath = "";
+  for (const key of Object.keys(childEnv)) {
+    if (key.toLowerCase() === "path") {
+      if (!existingPath && childEnv[key]) existingPath = childEnv[key];
+      delete childEnv[key];
+    }
+  }
+  childEnv[isWin ? "Path" : "PATH"] = existingPath ? `${binDir}${delimiter}${existingPath}` : binDir;
+  childEnv.HOME = sandbox;
+  childEnv.RELAY_HOME = sandbox;
+  childEnv.USERPROFILE = sandbox;
+  childEnv.XDG_CONFIG_HOME = join(sandbox, ".config");
+  childEnv.APPDATA = join(sandbox, "AppData", "Roaming");
+  childEnv.LOCALAPPDATA = join(sandbox, "AppData", "Local");
+
   const child = spawn(engineBin, [], {
     stdio: ["pipe", "pipe", "pipe"],
-    env: {
-      ...process.env,
-      HOME: sandbox,
-      RELAY_HOME: sandbox,
-      USERPROFILE: sandbox,
-      XDG_CONFIG_HOME: join(sandbox, ".config"),
-      APPDATA: join(sandbox, "AppData", "Roaming"),
-      LOCALAPPDATA: join(sandbox, "AppData", "Local"),
-      PATH: `${binDir}${delimiter}${process.env.PATH || ""}`,
-    },
+    env: childEnv,
   });
 
   const pending = new Map();
   let seq = 0;
+  let lastView = "";
   const rl = createInterface({ input: child.stdout });
   rl.on("line", (line) => {
     if (!line.trim()) return;
@@ -203,6 +213,9 @@ async function main() {
       msg = JSON.parse(line);
     } catch {
       return;
+    }
+    if (msg.state?.view) {
+      lastView = JSON.stringify(msg.state.view);
     }
     if (msg.id && pending.has(msg.id)) {
       const { resolve: resReq, reject: rejReq } = pending.get(msg.id);
@@ -215,14 +228,25 @@ async function main() {
   child.stderr.on("data", (d) => {
     stderr += d.toString("utf8");
   });
+  let exited = false;
+  const exitPromise = new Promise((resolveExit) => {
+    child.once("exit", () => {
+      exited = true;
+      resolveExit();
+    });
+  });
+
+  // On Windows, startup refresh + connect each run PowerShell GUI/install probes
+  // (guiProbeTimeout is 30s per probe), so allow generous headroom on Windows CI.
+  const requestTimeoutMs = isWin ? 180_000 : 45_000;
 
   function request(payload) {
     const id = `req-${++seq}`;
     return new Promise((resReq, rejReq) => {
       const timer = setTimeout(() => {
         pending.delete(id);
-        rejReq(new Error(`timeout waiting for ${payload.action} (stderr: ${stderr})`));
-      }, 20_000);
+        rejReq(new Error(`timeout waiting for ${payload.action} after ${requestTimeoutMs}ms (lastView: ${lastView}, stderr: ${stderr})`));
+      }, requestTimeoutMs);
       pending.set(id, {
         resolve: (st) => {
           clearTimeout(timer);
@@ -289,7 +313,17 @@ async function main() {
     console.log("[smoke] PASS 5/5: Full restore cleanly reverted both assistants to original user configs");
   } finally {
     child.stdin.end();
-    child.kill();
+    await Promise.race([
+      exitPromise,
+      new Promise((r) => setTimeout(r, 3_000)),
+    ]);
+    if (!exited) {
+      child.kill();
+      await Promise.race([
+        exitPromise,
+        new Promise((r) => setTimeout(r, 3_000)),
+      ]);
+    }
   }
 }
 
@@ -298,5 +332,5 @@ try {
   console.log("[smoke] ALL 5 REAL-ENGINE E2E CHECKS PASSED");
 } finally {
   server.close();
-  rmSync(sandbox, { recursive: true, force: true });
+  rmSync(sandbox, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
 }
