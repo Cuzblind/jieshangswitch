@@ -324,12 +324,16 @@ function DesktopShell() {
   }, [checkedClean]);
 
   async function loadUsage(nextRange: UsageRange) {
+    const previousRange = state?.usage?.range ?? usageRange;
     setUsageRange(nextRange);
     setUsageLoading(true);
     setError("");
     try {
-      applyState(await desktopUsage(nextRange));
+      const next = await desktopUsage(nextRange);
+      applyState(next);
+      if (next.usage?.range) setUsageRange(next.usage.range);
     } catch (err) {
+      setUsageRange(previousRange);
       setError(message(err, "没能读取用量记录，请再试一次。"));
     } finally {
       setUsageLoading(false);

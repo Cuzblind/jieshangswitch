@@ -112,9 +112,9 @@ func configureDesktopGUIWithCatalog(agent, origin, secret string, cat *DesktopCa
 			v["inferenceGatewayAuthScheme"] = "bearer"
 			if cat != nil {
 				delete(v, "defaultModel")
-				if !cat.Enabled {
+				if !cat.Enabled || len(cat.Models) == 0 {
 					delete(v, "inferenceModels")
-				} else if len(cat.Models) > 0 {
+				} else {
 					// Official Claude Desktop 3p gateway schema:
 					// inferenceModels entries use { name, labelOverride } and the first item is the default model.
 					ordered := make([]DesktopCatalogModel, 0, len(cat.Models))

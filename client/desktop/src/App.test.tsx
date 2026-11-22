@@ -417,6 +417,13 @@ describe("desktop assistant flow", () => {
     await userEvent.click(within(rangeGroup).getByRole("button", { name: "7天" }));
     expect(api.usage).toHaveBeenCalledWith("7d");
     expect(await screen.findByText("¥15.80")).toBeInTheDocument();
+
+    // Failing to switch to 90d must revert to the loaded range (7d) and never label 7d data as 90天.
+    api.usage.mockRejectedValueOnce("读取 90 天用量失败");
+    await userEvent.click(within(rangeGroup).getByRole("button", { name: "90天" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("读取 90 天用量失败");
+    expect(within(rangeGroup).getByRole("button", { name: "7天" })).toHaveAttribute("aria-pressed", "true");
+    expect(within(rangeGroup).getByRole("button", { name: "90天" })).toHaveAttribute("aria-pressed", "false");
   });
 
   it("loads authorized 6-brand models on the Models page", async () => {

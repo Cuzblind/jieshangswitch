@@ -53,7 +53,14 @@ func TestFetchDesktopCatalogParsesSixBrandsAndRejectsEmptyWhenEnabled(t *testing
 		if mode == "empty" {
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"success": true,
-				"data":    map[string]any{"enabled": true, "version": 1, "models": []any{}},
+				"data":    map[string]any{"enabled": true, "version": 2, "models": []any{}},
+			})
+			return
+		}
+		if mode == "null" {
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"success": true,
+				"data":    map[string]any{"enabled": true, "version": 2, "models": nil},
 			})
 			return
 		}
@@ -83,9 +90,17 @@ func TestFetchDesktopCatalogParsesSixBrandsAndRejectsEmptyWhenEnabled(t *testing
 		t.Fatalf("unexpected catalog: %+v", cat)
 	}
 
+	// Valid empty array ("models": []) represents last model revoked and must be accepted.
 	mode = "empty"
+	emptyCat, err := app.fetchDesktopCatalog("sk-test")
+	if err != nil || emptyCat == nil || !emptyCat.Enabled || len(emptyCat.Models) != 0 {
+		t.Fatalf("expected valid empty enabled catalog, got cat=%+v err=%v", emptyCat, err)
+	}
+
+	// Missing/null models when enabled must still be rejected as malformed.
+	mode = "null"
 	if _, err := app.fetchDesktopCatalog("sk-test"); err == nil {
-		t.Fatalf("expected empty enabled catalog to be rejected")
+		t.Fatalf("expected null enabled catalog to be rejected")
 	}
 }
 
@@ -143,6 +158,21 @@ func TestClaudeDesktopInferenceModelsSchemaAndWithdrawal(t *testing.T) {
 	if _, stillHas := profile2["inferenceModels"]; stillHas {
 		t.Fatalf("expected inferenceModels cleared on explicit withdrawal, got: %s", raw2)
 	}
+
+	// Re-populate then revoke last model (enabled: true, models: []): must also clear stale menu.
+	if err := configureDesktopGUIWithCatalog("claude", ProductionOrigin, "sk-test-gui", cat); err != nil {
+		t.Fatalf("re-populate configureDesktopGUIWithCatalog failed: %v", err)
+	}
+	revokedAll := &DesktopCatalogPayload{Enabled: true, Version: 5, Models: []DesktopCatalogModel{}}
+	if err := configureDesktopGUIWithCatalog("claude", ProductionOrigin, "sk-test-gui", revokedAll); err != nil {
+		t.Fatalf("revokedAll configureDesktopGUIWithCatalog failed: %v", err)
+	}
+	raw3, _ := os.ReadFile(profilePath)
+	var profile3 map[string]any
+	_ = json.Unmarshal(raw3, &profile3)
+	if _, stillHas := profile3["inferenceModels"]; stillHas {
+		t.Fatalf("expected inferenceModels cleared when enabled with 0 models, got: %s", raw3)
+	}
 }
 
 func TestEnsureClaudeOnboardingPreservesExistingFields(t *testing.T) {
@@ -179,9 +209,18 @@ func TestEnsureClaudeOnboardingPreservesExistingFields(t *testing.T) {
 
 func TestDesktopTestChatClaudeAndCodexAndErrors(t *testing.T) {
 	mode := "ok"
+	catalogEnabled := true
+	var lastCodexModel string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.URL.Path == "/api/install/catalog":
+			if !catalogEnabled {
+				_ = json.NewEncoder(w).Encode(map[string]any{
+					"success": true,
+					"data":    map[string]any{"enabled": false, "version": 1, "models": []any{}},
+				})
+				return
+			}
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"success": true,
 				"data": map[string]any{
@@ -208,10 +247,28 @@ func TestDesktopTestChatClaudeAndCodexAndErrors(t *testing.T) {
 				"content": []map[string]any{{"type": "text", "text": "OK"}},
 			})
 		case r.URL.Path == "/v1/responses":
+			if mode == "responses-404" {
+				w.WriteHeader(http.StatusNotFound)
+				_, _ = w.Write([]byte(`{"error":{"message":"not found"}}`))
+				return
+			}
+			var body struct {
+				Model string `json:"model"`
+			}
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			lastCodexModel = body.Model
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"id":          "resp_1",
-				"model":       "gpt-5",
+				"model":       body.Model,
 				"output_text": "OK",
+			})
+		case r.URL.Path == "/v1/chat/completions":
+			// Must NEVER be called as a fallback for Codex Responses API.
+			t.Errorf("Codex test-chat must not fall back to /v1/chat/completions")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"id":      "chat_1",
+				"model":   "gpt-5",
+				"choices": []map[string]any{{"message": map[string]string{"content": "OK"}}},
 			})
 		case r.URL.Path == "/api/install/balance":
 			_ = json.NewEncoder(w).Encode(map[string]any{
@@ -237,10 +294,22 @@ func TestDesktopTestChatClaudeAndCodexAndErrors(t *testing.T) {
 		t.Fatalf("expected success notice after claude test-chat")
 	}
 
+	// When catalog is disabled, Codex must probe core.DefaultCodexModel ("gpt-5.6-sol") on /v1/responses.
+	catalogEnabled = false
 	if err := app.DesktopAction(DesktopRequest{Action: "test-chat", Agent: "codex"}); err != nil {
 		t.Fatalf("codex test-chat failed: %v", err)
 	}
+	if lastCodexModel != "gpt-5.6-sol" {
+		t.Fatalf("expected codex default model gpt-5.6-sol when catalog disabled, got %q", lastCodexModel)
+	}
 
+	// When /v1/responses returns 404, Codex test-chat must fail (never fall back to /v1/chat/completions).
+	mode = "responses-404"
+	if err := app.DesktopAction(DesktopRequest{Action: "test-chat", Agent: "codex"}); err == nil {
+		t.Fatalf("expected error when /v1/responses returns 404")
+	}
+
+	catalogEnabled = true
 	mode = "quota"
 	if err := app.DesktopAction(DesktopRequest{Action: "test-chat", Agent: "claude"}); err == nil {
 		t.Fatalf("expected balance error on 402")
@@ -248,6 +317,95 @@ func TestDesktopTestChatClaudeAndCodexAndErrors(t *testing.T) {
 	mode = "busy"
 	if err := app.DesktopAction(DesktopRequest{Action: "test-chat", Agent: "claude"}); err == nil {
 		t.Fatalf("expected busy error on 503")
+	}
+}
+
+func TestDesktopDualWalletKeepsWorkspaceBalanceAndUsageAligned(t *testing.T) {
+	var usageAuth string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		auth := r.Header.Get("Authorization")
+		switch r.URL.Path {
+		case "/api/status":
+			_ = json.NewEncoder(w).Encode(map[string]any{"success": true, "data": map[string]any{}})
+		case "/v1/models":
+			_ = json.NewEncoder(w).Encode(map[string]any{"object": "list", "data": []map[string]any{{"id": "claude-sonnet-4-5"}}})
+		case "/api/install/balance":
+			if auth == "Bearer sk-personal" {
+				_ = json.NewEncoder(w).Encode(map[string]any{
+					"success": true,
+					"data": map[string]any{
+						"balance_cny":    "12.00",
+						"balance_low":    false,
+						"account_label":  "me***@personal.test",
+						"workspace":      map[string]any{"kind": "personal", "label": "个人工作区"},
+						"today_cost_cny": "1.00",
+						"today_requests": 2,
+						"today_tokens":   2000,
+					},
+				})
+				return
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"success": true,
+				"data": map[string]any{
+					"balance_cny":    "99.00",
+					"balance_low":    false,
+					"account_label":  "tm***@team.test",
+					"workspace":      map[string]any{"kind": "team", "label": "团队 · 研发", "team_id": 9},
+					"today_cost_cny": "9.00",
+					"today_requests": 9,
+					"today_tokens":   9000,
+				},
+			})
+		case "/api/install/usage":
+			usageAuth = auth
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"success": true,
+				"data": map[string]any{
+					"range":    "24h",
+					"cost_cny": "1.00",
+					"requests": 2,
+					"tokens":   2000,
+					"heatmap":  []any{},
+					"logs":     []any{},
+				},
+			})
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	app, _ := testDesktopApp(t, srv)
+	app.env.FindCLI = func(agent string) bool { return true }
+	app.env.Configured = func(agent, origin string) (string, bool) {
+		if agent == "claude" {
+			return "sk-personal", true
+		}
+		return "sk-team", true
+	}
+
+	if err := app.DesktopAction(DesktopRequest{Action: "refresh"}); err != nil {
+		t.Fatalf("refresh failed: %v", err)
+	}
+	if err := app.DesktopAction(DesktopRequest{Action: "usage-load", Range: "24h"}); err != nil {
+		t.Fatalf("usage-load failed: %v", err)
+	}
+	st := app.DesktopState()
+	if st.Balance == nil || st.Balance.Text != "余额 ¥12.00" {
+		t.Fatalf("expected personal balance ¥12.00, got %+v", st.Balance)
+	}
+	if st.Workspace == nil || st.Workspace.Kind != "personal" || st.Workspace.Label != "个人工作区" {
+		t.Fatalf("expected personal workspace (not overwritten by codex team wallet), got %+v", st.Workspace)
+	}
+	if st.AccountLabel != "me***@personal.test" {
+		t.Fatalf("expected personal accountLabel, got %q", st.AccountLabel)
+	}
+	if st.Today == nil || st.Today.CostCNY != "1.00" || st.Today.Requests != 2 {
+		t.Fatalf("expected personal today summary, got %+v", st.Today)
+	}
+	if usageAuth != "Bearer sk-personal" {
+		t.Fatalf("expected usage-load to use same wallet credential sk-personal, got %q", usageAuth)
 	}
 }
 

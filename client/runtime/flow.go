@@ -260,7 +260,8 @@ func (a *App) fetchDesktopCatalog(secret string) (*DesktopCatalogPayload, error)
 	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<18)).Decode(&out); err != nil || !out.Success {
 		return nil, errOther
 	}
-	if out.Data.Enabled && len(out.Data.Models) == 0 {
+	// Distinguish valid zero-authorized catalog ("models": []) from malformed/missing field ("models": null).
+	if out.Data.Enabled && out.Data.Models == nil {
 		return nil, errOther
 	}
 	return &out.Data, nil
@@ -269,7 +270,7 @@ func (a *App) fetchDesktopCatalog(secret string) (*DesktopCatalogPayload, error)
 // syncDesktopCatalog fetches the authorized desktop catalog and writes native
 // model menus for Claude Desktop or Codex.
 // - On transient fetch error: preserves the previously written valid catalog.
-// - On explicit withdrawal (cat.Enabled == false): removes managed catalog entries.
+// - On explicit withdrawal (cat.Enabled == false) or zero authorized models: removes managed catalog entries.
 func (a *App) syncDesktopCatalog(agent, secret string) {
 	cat, err := a.fetchDesktopCatalog(secret)
 	if err != nil || cat == nil {
@@ -285,16 +286,13 @@ func (a *App) syncDesktopCatalog(agent, secret string) {
 	case "claude":
 		_ = configureDesktopGUIWithCatalog(agent, a.origin, secret, cat)
 	case "codex":
-		if !cat.Enabled {
+		if !cat.Enabled || len(cat.Models) == 0 {
 			_ = paths().WriteCodex(core.CodexOpts{
 				Origin:       a.origin,
 				Secret:       secret,
 				Shell:        os.Getenv("SHELL"),
 				ClearCatalog: true,
 			})
-			return
-		}
-		if len(cat.Models) == 0 {
 			return
 		}
 		catalogModels := make([]core.CatalogModel, 0, len(cat.Models))
@@ -344,6 +342,20 @@ func ensureClaudeOnboarding() error {
 	return writePrivateFile(path, append(out, '\n'))
 }
 
+var reCodexConfiguredModel = regexp.MustCompile(`(?m)^\s*model\s*=\s*"([^"]+)"`)
+
+func configuredCodexModel() string {
+	raw, err := os.ReadFile(paths().CodexConfig())
+	if err != nil {
+		return ""
+	}
+	m := reCodexConfiguredModel.FindSubmatch(raw)
+	if len(m) < 2 {
+		return ""
+	}
+	return strings.TrimSpace(string(m[1]))
+}
+
 // testChat sends a minimal real inference request (max_tokens=8) to verify the user can
 // actually send their first message, not just list /v1/models.
 func (a *App) testChat(agent string) (string, time.Duration, error) {
@@ -353,12 +365,18 @@ func (a *App) testChat(agent string) (string, time.Duration, error) {
 	}
 	model := "claude-sonnet-4-5"
 	if agent == "codex" {
-		model = "gpt-5"
+		model = configuredCodexModel()
+		if model == "" {
+			model = core.DefaultCodexModel
+		}
 	}
 	if cat, err := a.fetchDesktopCatalog(secret); err == nil && cat != nil && cat.Enabled {
+		if len(cat.Models) == 0 {
+			return "", 0, errors.New("当前线路暂无授权模型，请切换线路或联系管理员")
+		}
 		if cat.DefaultModel != "" {
 			model = cat.DefaultModel
-		} else if len(cat.Models) > 0 && cat.Models[0].ID != "" {
+		} else if cat.Models[0].ID != "" {
 			model = cat.Models[0].ID
 		}
 	}
@@ -408,7 +426,8 @@ func (a *App) testChat(agent string) (string, time.Duration, error) {
 		return model, time.Since(start), nil
 	}
 
-	// Codex uses OpenAI Responses API (/v1/responses), falling back to /v1/chat/completions if unsupported.
+	// Codex is configured with wire_api = "responses"; probe /v1/responses strictly so
+	// test-chat never reports green when the Responses endpoint itself is unavailable.
 	responsesPayload, _ := json.Marshal(map[string]any{
 		"model":             model,
 		"max_output_tokens": 16,
@@ -425,36 +444,7 @@ func (a *App) testChat(agent string) (string, time.Duration, error) {
 	statusCode := resp.StatusCode
 	resp.Body.Close()
 	if statusCode == http.StatusNotFound || statusCode == http.StatusMethodNotAllowed {
-		chatPayload, _ := json.Marshal(map[string]any{
-			"model":      model,
-			"max_tokens": 8,
-			"messages": []map[string]string{
-				{"role": "user", "content": "Reply OK"},
-			},
-		})
-		req2, _ := http.NewRequest(http.MethodPost, a.origin+"/v1/chat/completions", bytes.NewReader(chatPayload))
-		req2.Header.Set("Content-Type", "application/json")
-		req2.Header.Set("Authorization", "Bearer "+secret)
-		resp2, err2 := client.Do(req2)
-		if err2 != nil {
-			return "", 0, errors.New("暂时连不上服务器，请检查网络后再试")
-		}
-		defer resp2.Body.Close()
-		raw, _ = io.ReadAll(io.LimitReader(resp2.Body, 1<<16))
-		if err := classifyChatProbeFailure(resp2.StatusCode, raw); err != nil {
-			return "", 0, err
-		}
-		var out struct {
-			Model   string `json:"model"`
-			Choices []any  `json:"choices"`
-		}
-		if err := json.Unmarshal(raw, &out); err != nil || len(out.Choices) == 0 {
-			return "", 0, errors.New("服务器返回了异常响应，可切换其他线路后再试")
-		}
-		if out.Model != "" {
-			model = out.Model
-		}
-		return model, time.Since(start), nil
+		return "", 0, errors.New("当前线路不支持 Codex Responses 接口，请切换其他线路或联系客服")
 	}
 	if err := classifyChatProbeFailure(statusCode, raw); err != nil {
 		return "", 0, err
@@ -510,19 +500,25 @@ const (
 	connDisabled
 )
 
-// fetchBalance reads the balance and, with it, whether the web stopped this
-// connection (401 + stopped:true → 已停用).
-func (a *App) fetchBalance(secret string) (*Balance, connState) {
-	bal, _, _, cs := a.fetchBalanceAndTier(secret)
-	return bal, cs
+type balanceMeta struct {
+	accountLabel string
+	workspace    *WorkspaceInfo
+	today        *TodayUsageSummary
 }
 
-func (a *App) fetchBalanceAndTier(secret string) (*Balance, string, []TierOption, connState) {
+// fetchBalance reads the balance and, with it, whether the web stopped this
+// connection (401 + stopped:true → 已停用).
+func (a *App) fetchBalance(secret string) (*Balance, *balanceMeta, connState) {
+	bal, meta, _, _, cs := a.fetchBalanceAndTier(secret)
+	return bal, meta, cs
+}
+
+func (a *App) fetchBalanceAndTier(secret string) (*Balance, *balanceMeta, string, []TierOption, connState) {
 	req, _ := http.NewRequest(http.MethodGet, a.origin+"/api/install/balance", nil)
 	req.Header.Set("Authorization", "Bearer "+secret)
 	resp, err := a.env.HTTP.Do(req)
 	if err != nil {
-		return nil, "", nil, connNetwork
+		return nil, nil, "", nil, connNetwork
 	}
 	defer resp.Body.Close()
 	var out struct {
@@ -549,27 +545,26 @@ func (a *App) fetchBalanceAndTier(secret string) (*Balance, string, []TierOption
 	decErr := json.NewDecoder(io.LimitReader(resp.Body, 1<<16)).Decode(&out)
 	switch {
 	case resp.StatusCode == http.StatusUnauthorized && out.Stopped:
-		return nil, "", nil, connStopped
+		return nil, nil, "", nil, connStopped
 	case resp.StatusCode == http.StatusForbidden && out.AccountDisabled:
-		return nil, "", nil, connDisabled
+		return nil, nil, "", nil, connDisabled
 	case resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden:
-		return nil, "", nil, connExpired
+		return nil, nil, "", nil, connExpired
 	case resp.StatusCode == http.StatusServiceUnavailable:
 		// Hi-fi: keep「能用了」, show soft balance line.
 		msg := strings.TrimSpace(out.Message)
 		if msg == "" {
 			msg = "暂时读不到余额，过一会儿再试。"
 		}
-		return &Balance{Text: msg}, out.Data.Tier, out.Data.Tiers, connOK
+		return &Balance{Text: msg}, nil, out.Data.Tier, out.Data.Tiers, connOK
 	case resp.StatusCode != http.StatusOK || decErr != nil || !out.Success:
-		return nil, "", nil, connNetwork
+		return nil, nil, "", nil, connNetwork
 	}
-	a.mu.Lock()
-	if strings.TrimSpace(out.Data.AccountLabel) != "" {
-		a.accountLabel = strings.TrimSpace(out.Data.AccountLabel)
+	meta := &balanceMeta{
+		accountLabel: strings.TrimSpace(out.Data.AccountLabel),
 	}
 	if out.Data.Workspace != nil && strings.TrimSpace(out.Data.Workspace.Label) != "" {
-		a.workspace = &WorkspaceInfo{
+		meta.workspace = &WorkspaceInfo{
 			Kind:   strings.TrimSpace(out.Data.Workspace.Kind),
 			Label:  strings.TrimSpace(out.Data.Workspace.Label),
 			TeamID: out.Data.Workspace.TeamID,
@@ -580,19 +575,18 @@ func (a *App) fetchBalanceAndTier(secret string) (*Balance, string, []TierOption
 		if cost == "" {
 			cost = "0.00"
 		}
-		a.today = &TodayUsageSummary{
+		meta.today = &TodayUsageSummary{
 			CostCNY:  cost,
 			Requests: out.Data.TodayRequests,
 			Tokens:   out.Data.TodayTokens,
 		}
 	}
-	a.mu.Unlock()
 	s := strings.Trim(string(out.Data.BalanceCNY), `"`)
 	f, err := strconv.ParseFloat(s, 64)
 	if err != nil {
-		return nil, out.Data.Tier, out.Data.Tiers, connOK
+		return nil, meta, out.Data.Tier, out.Data.Tiers, connOK
 	}
-	return balanceView(f, out.Data.Low), out.Data.Tier, out.Data.Tiers, connOK
+	return balanceView(f, out.Data.Low), meta, out.Data.Tier, out.Data.Tiers, connOK
 }
 
 func (a *App) connectedSecret(preferredAgent string) string {
@@ -618,9 +612,13 @@ func normalizeUsageRange(raw string) string {
 }
 
 // fetchUsage loads the desktop Usage & Logs dashboard snapshot from /api/install/usage.
+// Always uses the same connected wallet that owns balance, workspace, and today summary.
 func (a *App) fetchUsage(rangeKey string) (*UsageSnapshot, error) {
 	rangeKey = normalizeUsageRange(rangeKey)
-	secret := a.connectedSecret("")
+	a.mu.Lock()
+	walletAgent := a.walletAgent
+	a.mu.Unlock()
+	secret := a.connectedSecret(walletAgent)
 	if secret == "" {
 		a.mu.Lock()
 		a.usage = nil
@@ -1241,6 +1239,8 @@ func (a *App) refreshStatus(withBalance bool) {
 	a.fetchSiteStatus()
 	var out []AgentStatus
 	var bal *Balance
+	var meta *balanceMeta
+	var walletAgent string
 	expired := ""
 	for _, ag := range []string{"claude", "codex"} {
 		n := agentName(ag)
@@ -1256,7 +1256,7 @@ func (a *App) refreshStatus(withBalance bool) {
 			st.State, st.Badge, st.Button, st.Action = "nocli", badgeNoCLI, "帮我装上", "install-cli"
 		default:
 			// one call per assistant: balance + tier + stopped/expired (boss: on open + manual refresh)
-			b, tier, tiers, cs := a.fetchBalanceAndTier(secret)
+			b, m, tier, tiers, cs := a.fetchBalanceAndTier(secret)
 			switch cs {
 			case connStopped:
 				st.State, st.Badge, st.Button, st.Action = "stopped", "已停用", "重新接上 "+n, "connect"
@@ -1266,8 +1266,14 @@ func (a *App) refreshStatus(withBalance bool) {
 			case connOK:
 				st.State, st.Badge, st.Button, st.Action = "ok", "能用了", "恢复成原来的样子", "restore"
 				st.Tier, st.Tiers = tier, tiers
-				if withBalance && bal == nil {
-					bal = b
+				// Bind balance, workspace, accountLabel, today summary, and usage logs
+				// atomically to the same single selected wallet connection.
+				if walletAgent == "" {
+					walletAgent = ag
+					if withBalance {
+						bal = b
+						meta = m
+					}
 				}
 			case connExpired: // D36: 401 → straight to error-expired (button 「重新接上」)
 				st.State, st.Badge, st.Button, st.Action = "broken", "暂时用不了", "重新接上", "connect"
@@ -1286,21 +1292,32 @@ func (a *App) refreshStatus(withBalance bool) {
 	}
 	// After a restore no assistant holds a key; the desktop authorization still
 	// reads the account balance, so the home screen keeps showing it.
-	if withBalance && bal == nil && expired == "" {
+	if withBalance && walletAgent == "" && expired == "" {
 		configured := false
 		for _, st := range out {
 			configured = configured || st.Configured
 		}
 		if auth := a.clientAuth(); auth != "" && !configured {
-			if b, cs := a.fetchBalance(auth); cs == connOK {
+			if b, m, cs := a.fetchBalance(auth); cs == connOK {
 				bal = b
+				meta = m
 			}
 		}
 	}
 	a.mu.Lock()
 	a.statuses = out
+	a.walletAgent = walletAgent
 	if withBalance {
 		a.balance = bal
+		if meta != nil {
+			a.accountLabel = meta.accountLabel
+			a.workspace = meta.workspace
+			a.today = meta.today
+		} else {
+			a.accountLabel = ""
+			a.workspace = nil
+			a.today = nil
+		}
 	}
 	a.mu.Unlock()
 	// The desktop card already says "需要重新接上"; only the legacy client opens a dialog.

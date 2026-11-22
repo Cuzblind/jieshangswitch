@@ -200,6 +200,7 @@ export function UsagePage({
   onGoHome: () => void;
 }) {
   const rangeLabel = RANGES.find((r) => r.value === range)?.label ?? "24小时";
+  const matched = !!usage && usage.range === range;
   const { weeks, monthMarkers } = useMemo(() => buildHeatmapWeeks(usage?.heatmap ?? []), [usage?.heatmap]);
 
   if (!anyConnected) {
@@ -220,12 +221,12 @@ export function UsagePage({
     );
   }
 
-  const logs = usage?.logs ?? [];
-  const totalRequests = usage?.requests ?? 0;
-  const totalTokens = usage?.tokens ?? 0;
-  const promptTokens = usage?.promptTokens ?? 0;
-  const completionTokens = usage?.completionTokens ?? 0;
-  const costCny = usage?.costCny ?? "0.00";
+  const logs = matched ? (usage?.logs ?? []) : [];
+  const totalRequests = matched ? (usage?.requests ?? 0) : 0;
+  const totalTokens = matched ? (usage?.tokens ?? 0) : 0;
+  const promptTokens = matched ? (usage?.promptTokens ?? 0) : 0;
+  const completionTokens = matched ? (usage?.completionTokens ?? 0) : 0;
+  const costCny = matched ? (usage?.costCny ?? "0.00") : "—";
 
   return (
     <div className="flex flex-col gap-5">
@@ -256,10 +257,10 @@ export function UsagePage({
               <span className={cn(typeClass("micro"), "text-muted-foreground")}>{rangeLabel}</span>
             </div>
             <p className={cn(typeClass("display"), "m-0 tabular-nums text-foreground")} style={{ fontVariationSettings: fontWeights.bold }}>
-              ¥{costCny}
+              {matched ? `¥${costCny}` : "—"}
             </p>
             <span className={cn(typeClass("micro"), "text-muted-foreground")}>
-              按当前工作区实际计费汇总
+              {matched ? "按当前工作区实际计费汇总" : loading ? "正在读取该周期数据……" : "该周期暂无可用数据"}
             </span>
           </Card>
         </Elevated>
@@ -274,10 +275,14 @@ export function UsagePage({
               <span className={cn(typeClass("micro"), "text-muted-foreground")}>{rangeLabel}</span>
             </div>
             <p className={cn(typeClass("display"), "m-0 tabular-nums text-foreground")} style={{ fontVariationSettings: fontWeights.bold }}>
-              {formatCompactTokens(totalTokens)}
+              {matched ? formatCompactTokens(totalTokens) : "—"}
             </p>
             <span className={cn(typeClass("micro"), "tabular-nums text-muted-foreground")}>
-              输入 {formatCompactTokens(promptTokens)} · 输出 {formatCompactTokens(completionTokens)}
+              {matched
+                ? `输入 ${formatCompactTokens(promptTokens)} · 输出 ${formatCompactTokens(completionTokens)}`
+                : loading
+                  ? "正在读取……"
+                  : "暂无数据"}
             </span>
           </Card>
         </Elevated>
@@ -292,12 +297,16 @@ export function UsagePage({
               <span className={cn(typeClass("micro"), "text-muted-foreground")}>{rangeLabel}</span>
             </div>
             <p className={cn(typeClass("display"), "m-0 tabular-nums text-foreground")} style={{ fontVariationSettings: fontWeights.bold }}>
-              {totalRequests.toLocaleString("zh-CN")}
+              {matched ? totalRequests.toLocaleString("zh-CN") : "—"}
             </p>
             <span className={cn(typeClass("micro"), "tabular-nums text-muted-foreground")}>
-              {totalRequests > 0
-                ? `平均每次 ${formatCompactTokens(Math.round(totalTokens / totalRequests))} tokens`
-                : "尚无调用记录"}
+              {!matched
+                ? loading
+                  ? "正在读取……"
+                  : "暂无数据"
+                : totalRequests > 0
+                  ? `平均每次 ${formatCompactTokens(Math.round(totalTokens / totalRequests))} tokens`
+                  : "尚无调用记录"}
             </span>
           </Card>
         </Elevated>

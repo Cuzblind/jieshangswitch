@@ -133,6 +133,7 @@ type App struct {
 	view             View
 	statuses         []AgentStatus
 	balance          *Balance
+	walletAgent      string
 	accountLabel     string
 	workspace        *WorkspaceInfo
 	today            *TodayUsageSummary

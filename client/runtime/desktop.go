@@ -552,6 +552,7 @@ func (a *App) DesktopAction(r DesktopRequest) error {
 		a.mu.Lock()
 		a.current = session{}
 		a.balance = nil
+		a.walletAgent = ""
 		a.accountLabel = ""
 		a.workspace = nil
 		a.today = nil
