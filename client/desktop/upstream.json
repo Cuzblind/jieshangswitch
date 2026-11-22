@@ -42,6 +42,10 @@
     }
   ],
   "adapted_files": [
+    "src/components/ui/button.tsx",
+    "src/components/ui/card.tsx",
+    "src/components/ui/dialog.tsx",
+    "src/lib/utils.ts",
     "src-tauri/src/main.rs",
     "src-tauri/build.rs"
   ]

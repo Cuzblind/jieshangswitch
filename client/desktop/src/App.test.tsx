@@ -328,4 +328,30 @@ describe("desktop assistant flow", () => {
     expect(api.switchTier).toHaveBeenCalledWith("claude", "economy");
     expect(await screen.findByText("已将 Claude Code 切到「省钱」线路，下一个任务生效。")).toBeInTheDocument();
   });
+
+  it("runs a real test-chat probe from the connected assistant card", async () => {
+    api.action.mockResolvedValue({
+      ...fixture(),
+      view: { screen: "home", agent: "claude", notice: "对话已通（claude-sonnet-4-5 · 1.1s），打开 Claude Code 就能直接发话。" },
+    });
+    render(<App />);
+    const btn = await screen.findByRole("button", { name: "测试对话 · Claude Code" });
+    await userEvent.click(btn);
+    expect(api.action).toHaveBeenCalledWith("test-chat", "claude", false);
+    expect(await screen.findByText(/对话已通（claude-sonnet-4-5/)).toBeInTheDocument();
+  });
+
+  it("silently refreshes balance when the window regains focus", async () => {
+    api.action.mockResolvedValue({
+      ...fixture(),
+      balance: { text: "余额 ¥88.00", low: false },
+    });
+    render(<App />);
+    await screen.findByText("余额 ¥12.30");
+    await act(async () => {
+      window.dispatchEvent(new Event("focus"));
+    });
+    await waitFor(() => expect(api.action).toHaveBeenCalledWith("refresh"));
+    expect(await screen.findByText("余额 ¥88.00")).toBeInTheDocument();
+  });
 });

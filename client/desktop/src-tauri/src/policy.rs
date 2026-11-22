@@ -19,6 +19,7 @@ pub enum Action {
     CancelInstall,
     Launch,
     Check,
+    TestChat,
     SwitchTier,
     Repair,
     Restore,
@@ -61,6 +62,7 @@ impl Action {
             Self::CancelInstall => "cancel-install",
             Self::Launch => "launch",
             Self::Check => "check",
+            Self::TestChat => "test-chat",
             Self::SwitchTier => "switch-tier",
             Self::Repair => "repair",
             Self::Restore => "restore",
@@ -100,6 +102,7 @@ impl Action {
                 | Self::LaunchGui
                 | Self::Launch
                 | Self::Check
+                | Self::TestChat
                 | Self::SwitchTier
                 | Self::Repair
                 | Self::LogoutConfirm

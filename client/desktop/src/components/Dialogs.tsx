@@ -1,14 +1,17 @@
-import { CheckCircle2, X } from "lucide-react";
+import { CheckCircle2 } from "lucide-react";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
-  DialogClose,
   DialogContent,
   DialogDescription,
   DialogFooter,
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { InputCopy } from "@/components/ui/input-copy";
+import { typeClass } from "@/lib/size-context";
+import { cn } from "@/lib/utils";
 import { viewAction, type Action, type Agent, type AppUpdate, type DesktopState, type View } from "@/lib/desktop";
 
 type CopyAction = "copy-qq" | "copy-email" | "copy-report";
@@ -36,6 +39,7 @@ export function OperationDialog({
   const support = view?.screen === "support";
   const done = view?.screen === "success" || view?.screen === "done";
   const title = support ? "联系客服" : confirm ? "请确认" : done ? "准备好了" : "还差一步";
+
   return (
     <Dialog
       open={open}
@@ -43,16 +47,14 @@ export function OperationDialog({
         if (!next) onDismiss();
       }}
     >
-      <DialogContent aria-describedby="operation-description">
-        <DialogClose asChild>
-          <Button variant="ghost" size="icon" className="absolute right-3 top-3" aria-label="关闭弹窗">
-            <X size={16} />
-          </Button>
-        </DialogClose>
+      <DialogContent size={support ? "lg" : "sm"} aria-describedby="operation-description">
         <DialogHeader>
           {done && (
-            <div className="dialog-badge ok" aria-hidden="true">
-              <CheckCircle2 size={20} />
+            <div className="mb-1">
+              <Badge variant="solid" color="green" size="compact">
+                <CheckCircle2 size={12} className="mr-1 inline" aria-hidden="true" />
+                已完成
+              </Badge>
             </div>
           )}
           <DialogTitle>{title}</DialogTitle>
@@ -60,58 +62,88 @@ export function OperationDialog({
             {support ? "把遇到的问题告诉我们，我们帮你一起解决。" : view?.line}
           </DialogDescription>
         </DialogHeader>
-        <div className="modal-body">
-          {view?.extra && <p>{view.extra}</p>}
-          {view?.note && <p className="modal-note">{view.note}</p>}
+
+        <div className="flex flex-col gap-3 py-1">
+          {view?.extra && <p className={cn(typeClass("body"), "m-0 text-foreground")}>{view.extra}</p>}
+          {view?.note && <p className={cn(typeClass("caption"), "m-0 text-muted-foreground")}>{view.note}</p>}
+
           {support && (
-            <>
+            <div className="flex flex-col gap-2.5">
               {state?.qq && (
-                <div className="contact">
-                  <span>客服 QQ：{state.qq}</span>
-                  <Button variant="outline" size="sm" onClick={() => onCopy("copy-qq", "QQ 号已复制")}>
+                <div className="flex items-center justify-between gap-2">
+                  <div className="min-w-0 flex-1">
+                    <InputCopy
+                      value={state.qq}
+                      label="客服 QQ"
+                      onCopy={() => onCopy("copy-qq", "QQ 号已复制")}
+                    />
+                  </div>
+                  <Button variant="tertiary" size="compact" onClick={() => onCopy("copy-qq", "QQ 号已复制")}>
                     复制 QQ 号
                   </Button>
                 </div>
               )}
               {state?.email && (
-                <div className="contact">
-                  <span>邮箱：{state.email}</span>
-                  <Button variant="outline" size="sm" onClick={() => onCopy("copy-email", "邮箱已复制")}>
+                <div className="flex items-center justify-between gap-2">
+                  <div className="min-w-0 flex-1">
+                    <InputCopy
+                      value={state.email}
+                      label="客服邮箱"
+                      onCopy={() => onCopy("copy-email", "邮箱已复制")}
+                    />
+                  </div>
+                  <Button variant="tertiary" size="compact" onClick={() => onCopy("copy-email", "邮箱已复制")}>
                     复制邮箱
                   </Button>
                 </div>
               )}
               {state?.report && (
-                <>
-                  <pre className="report">{state.report}</pre>
-                  <Button variant="ghost" size="sm" onClick={() => onCopy("copy-report", "问题报告已复制")}>
-                    复制问题报告
-                  </Button>
-                </>
+                <div className="flex flex-col gap-2">
+                  <pre className={cn(typeClass("caption"), "m-0 max-h-40 overflow-auto rounded-lg bg-surface-2 p-3 font-mono text-foreground ring-1 ring-border")}>
+                    {state.report}
+                  </pre>
+                  <div>
+                    <Button variant="ghost" size="compact" onClick={() => onCopy("copy-report", "问题报告已复制")}>
+                      复制问题报告
+                    </Button>
+                  </div>
+                </div>
               )}
               {copied && (
-                <p role="status" className="modal-note">
+                <p role="status" className={cn(typeClass("caption"), "m-0 text-muted-foreground")}>
                   {copied}
                 </p>
               )}
-            </>
+            </div>
           )}
+
           {view?.screen === "success" && (
-            <p className="modal-note">如果助手之前已经打开，请先保存任务并关闭，再重新打开。</p>
+            <p className={cn(typeClass("caption"), "m-0 text-muted-foreground")}>
+              如果助手之前已经打开，请先保存任务并关闭，再重新打开。
+            </p>
           )}
         </div>
+
         <DialogFooter>
           {!support && (
-            <Button variant="outline" onClick={onDismiss}>
+            <Button variant="tertiary" onClick={onDismiss}>
               {confirm ? "先不" : "关闭"}
             </Button>
           )}
           {!support && (
-            <Button disabled={busy} onClick={() => onAct(viewAction(view?.action), view?.agent, confirm)}>
+            <Button
+              variant={confirm && view?.action === "restore-confirm" ? "destructive" : "primary"}
+              disabled={busy}
+              onClick={() => onAct(viewAction(view?.action), view?.agent, confirm)}
+            >
               {view?.action === "restart" ? "返回首页" : view?.button?.replace("复制，", "") || "返回首页"}
             </Button>
           )}
-          {support && <Button onClick={onDismiss}>返回首页</Button>}
+          {support && (
+            <Button variant="primary" onClick={onDismiss}>
+              返回首页
+            </Button>
+          )}
         </DialogFooter>
       </DialogContent>
     </Dialog>
@@ -138,23 +170,27 @@ export function ClientUpdateDialog({
         if (!open) onClose();
       }}
     >
-      <DialogContent aria-describedby="client-update-description">
+      <DialogContent size="sm" aria-describedby="client-update-description">
         <DialogHeader>
           <DialogTitle>{update?.available ? `更新至 ${update.version}` : "接上AI已是最新版本"}</DialogTitle>
           <DialogDescription id="client-update-description">
             {update?.available ? "更新完成后会重新打开接上AI，保留你的连接设置。" : "当前没有可安装的客户端更新。"}
           </DialogDescription>
         </DialogHeader>
-        <div className="modal-body">
-          {update?.notes && <p>{update.notes}</p>}
-          {updating && <p role="status">{progress}</p>}
+        <div className="flex flex-col gap-2 py-1">
+          {update?.notes && <p className={cn(typeClass("body"), "m-0 text-foreground")}>{update.notes}</p>}
+          {updating && (
+            <p role="status" className={cn(typeClass("caption"), "m-0 text-muted-foreground")}>
+              {progress}
+            </p>
+          )}
         </div>
         <DialogFooter>
-          <Button variant="outline" onClick={onClose}>
+          <Button variant="tertiary" onClick={onClose}>
             {updating ? "取消更新并关闭" : "关闭"}
           </Button>
           {update?.available && (
-            <Button disabled={updating} onClick={onInstall}>
+            <Button variant="primary" loading={updating} disabled={updating} onClick={onInstall}>
               下载并更新
             </Button>
           )}

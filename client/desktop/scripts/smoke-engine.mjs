@@ -114,6 +114,26 @@ const server = createServer(async (req, res) => {
       data: { tier: nextGroup, tiers: TIERS },
     });
   }
+  if (req.method === "POST" && url.pathname === "/v1/messages") {
+    if (!state.tiersByKey[auth]) {
+      return sendJson(res, 401, { success: false, message: "unauthorized" });
+    }
+    return sendJson(res, 200, {
+      id: "msg_smoke",
+      model: "claude-sonnet-4-5",
+      content: [{ type: "text", text: "OK" }],
+    });
+  }
+  if (req.method === "POST" && url.pathname === "/v1/responses") {
+    if (!state.tiersByKey[auth]) {
+      return sendJson(res, 401, { success: false, message: "unauthorized" });
+    }
+    return sendJson(res, 200, {
+      id: "resp_smoke",
+      model: "gpt-5",
+      output_text: "OK",
+    });
+  }
   if (req.method === "GET" && url.pathname === "/api/install/catalog") {
     const tier = state.tiersByKey[auth];
     if (!tier) {
@@ -275,7 +295,9 @@ async function main() {
     assert.equal(writtenClaude.env.USER_CUSTOM, "keep", "must preserve user custom env");
     assert.equal(writtenClaude.env.ANTHROPIC_BASE_URL, origin);
     assert.equal(writtenClaude.env.ANTHROPIC_AUTH_TOKEN, "sk-smoke-claude");
-    console.log("[smoke] PASS 1/5: Claude Code connected, balance & 3 tiers loaded, user config preserved");
+    const claudeJson = JSON.parse(readFileSync(join(sandbox, ".claude.json"), "utf8"));
+    assert.equal(claudeJson.hasCompletedOnboarding, true, "must mark Claude onboarding complete");
+    console.log("[smoke] PASS 1/5: Claude Code connected, onboarding bypassed, balance & 3 tiers loaded");
 
     // Connect Codex
     const stCodex = await request({ action: "connect-ticket", agent: "codex", ticket: "smoke_codex_ticket_002" });
@@ -285,7 +307,8 @@ async function main() {
     const writtenCodex = readFileSync(codexConfigPath, "utf8");
     assert.ok(writtenCodex.includes("[profiles.work]"), "must preserve existing Codex profiles");
     assert.ok(writtenCodex.includes(`${origin}/v1`), "must write gateway base_url");
-    console.log("[smoke] PASS 2/5: Codex connected, existing [profiles.work] preserved");
+    assert.ok(writtenCodex.includes("model_catalog_json"), "must sync Codex catalog on connect");
+    console.log("[smoke] PASS 2/5: Codex connected, catalog synced & existing [profiles.work] preserved");
 
     // Switch Claude tier inline -> economy; Codex must remain balanced
     const stSwitched = await request({ action: "switch-tier", agent: "claude", tier: "economy" });
@@ -295,11 +318,13 @@ async function main() {
     assert.equal(state.tierSwitches, 1);
     console.log("[smoke] PASS 3/5: Inline tier switch updated Claude -> economy while Codex stayed balanced");
 
-    // Strict /v1/models connectivity check
+    // Strict /v1/models check + real test-chat message probe
     const stCheck = await request({ action: "check", agent: "claude" });
     assert.equal(stCheck.view?.notice, "连接检查通过。");
     assert.ok(state.checks >= 1);
-    console.log("[smoke] PASS 4/5: Free /v1/models connection check passed with strict body validation");
+    const stChat = await request({ action: "test-chat", agent: "claude" });
+    assert.ok(stChat.view?.notice?.includes("对话已通"), `expected chat probe pass notice, got ${stChat.view?.notice}`);
+    console.log("[smoke] PASS 4/5: /v1/models check & real test-chat message probe both passed");
 
     // Global restore -> confirm -> verify original configs cleanly restored
     const stConfirm = await request({ action: "restore" });

@@ -144,3 +144,109 @@ func TestClaudeDesktopInferenceModelsSchemaAndWithdrawal(t *testing.T) {
 		t.Fatalf("expected inferenceModels cleared on explicit withdrawal, got: %s", raw2)
 	}
 }
+
+func TestEnsureClaudeOnboardingPreservesExistingFields(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("RELAY_HOME", home)
+	t.Setenv("HOME", home)
+
+	// Pre-populate ~/.claude.json with mcpServers & custom user setting
+	existing := `{"mcpServers":{"fs":{"command":"npx"}},"customFlag":"keep"}`
+	if err := os.WriteFile(claudeJSONPath(), []byte(existing), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := ensureClaudeOnboarding(); err != nil {
+		t.Fatalf("ensureClaudeOnboarding failed: %v", err)
+	}
+	raw, err := os.ReadFile(claudeJSONPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc map[string]any
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		t.Fatal(err)
+	}
+	if doc["hasCompletedOnboarding"] != true {
+		t.Fatalf("expected hasCompletedOnboarding=true, got %+v", doc)
+	}
+	if doc["customFlag"] != "keep" {
+		t.Fatalf("expected customFlag preserved, got %+v", doc)
+	}
+	if _, ok := doc["mcpServers"].(map[string]any); !ok {
+		t.Fatalf("expected mcpServers preserved, got %+v", doc)
+	}
+}
+
+func TestDesktopTestChatClaudeAndCodexAndErrors(t *testing.T) {
+	mode := "ok"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/api/install/catalog":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"success": true,
+				"data": map[string]any{
+					"enabled":       true,
+					"version":       1,
+					"default_model": "claude-sonnet-4-5",
+					"models":        []map[string]any{{"id": "claude-sonnet-4-5", "display_name": "Claude Sonnet 4.5"}},
+				},
+			})
+		case r.URL.Path == "/v1/messages":
+			if mode == "quota" {
+				w.WriteHeader(http.StatusPaymentRequired)
+				_, _ = w.Write([]byte(`{"error":{"message":"insufficient balance"}}`))
+				return
+			}
+			if mode == "busy" {
+				w.WriteHeader(http.StatusServiceUnavailable)
+				_, _ = w.Write([]byte(`{"error":{"message":"upstream busy"}}`))
+				return
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"id":      "msg_1",
+				"model":   "claude-sonnet-4-5",
+				"content": []map[string]any{{"type": "text", "text": "OK"}},
+			})
+		case r.URL.Path == "/v1/responses":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"id":          "resp_1",
+				"model":       "gpt-5",
+				"output_text": "OK",
+			})
+		case r.URL.Path == "/api/install/balance":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"success": true,
+				"data":    map[string]any{"balance_cny": "10.00", "balance_low": false},
+			})
+		case r.URL.Path == "/api/status":
+			_ = json.NewEncoder(w).Encode(map[string]any{"success": true, "data": map[string]any{}})
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	app, _ := testDesktopApp(t, srv)
+	app.env.FindCLI = func(agent string) bool { return true }
+	app.env.Configured = func(agent, origin string) (string, bool) { return "sk-test-chat", true }
+
+	if err := app.DesktopAction(DesktopRequest{Action: "test-chat", Agent: "claude"}); err != nil {
+		t.Fatalf("claude test-chat failed: %v", err)
+	}
+	if notice := app.DesktopState().View.Notice; notice == "" {
+		t.Fatalf("expected success notice after claude test-chat")
+	}
+
+	if err := app.DesktopAction(DesktopRequest{Action: "test-chat", Agent: "codex"}); err != nil {
+		t.Fatalf("codex test-chat failed: %v", err)
+	}
+
+	mode = "quota"
+	if err := app.DesktopAction(DesktopRequest{Action: "test-chat", Agent: "claude"}); err == nil {
+		t.Fatalf("expected balance error on 402")
+	}
+	mode = "busy"
+	if err := app.DesktopAction(DesktopRequest{Action: "test-chat", Agent: "claude"}); err == nil {
+		t.Fatalf("expected busy error on 503")
+	}
+}

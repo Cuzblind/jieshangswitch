@@ -1,9 +1,8 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import "@/i18n";
 import {
   ArrowUpRight,
   BookOpen,
-  CircleAlert,
   FileText,
   House,
   LifeBuoy,
@@ -12,9 +11,13 @@ import {
   RefreshCw,
   Settings,
   Wallet,
-  CheckCircle2,
 } from "lucide-react";
+import { Badge } from "@/components/ui/badge";
+import { Banner, BannerAction, BannerActions, BannerDescription, BannerTitle } from "@/components/ui/banner";
 import { Button } from "@/components/ui/button";
+import { Card } from "@/components/ui/card";
+import { Tooltip, TooltipProvider } from "@/components/ui/tooltip";
+import { FluidHoverHighlight } from "@/components/fluid-hover-highlight";
 import { AssistantCard } from "@/components/AssistantCard";
 import { PromptsPanel } from "@/components/PromptsPanel";
 import { McpPanel } from "@/components/McpPanel";
@@ -22,6 +25,13 @@ import { SkillsPanel } from "@/components/SkillsPanel";
 import { SettingsPage } from "@/components/SettingsPage";
 import { OperationDialog, ClientUpdateDialog } from "@/components/Dialogs";
 import { BrandIcon } from "@/components/BrandIcon";
+import { useFluidHover } from "@/hooks/use-fluid-hover";
+import { Elevated } from "@/lib/elevated";
+import { FluidProvider } from "@/lib/fluid-provider";
+import { fontWeights } from "@/lib/font-weight";
+import { useShape } from "@/lib/shape-context";
+import { typeClass } from "@/lib/size-context";
+import { cn } from "@/lib/utils";
 import { useTranslation } from "react-i18next";
 import {
   desktopAction,
@@ -58,7 +68,7 @@ export const agents = [
 
 type Page = "home" | "skills" | "mcp" | "prompts" | "settings";
 const pages: { page: Page; icon: typeof House; title: string; subtitle: string }[] = [
-  { page: "home", icon: House, title: "你的助手，准备好就能出发", subtitle: "安装、接上、打开，在这里一次完成。" },
+  { page: "home", icon: House, title: "你的助手，准备好就能出发", subtitle: "安装、接上、切换线路与测试对话，在这里一次完成。" },
   { page: "skills", icon: BookOpen, title: "Skills", subtitle: "给助手装上专门的本领，比如写论文、做表格、查文献。" },
   { page: "mcp", icon: Plug, title: "MCP 服务", subtitle: "让助手连接文件、数据库、浏览器等外部工具。" },
   { page: "prompts", icon: FileText, title: "提示词", subtitle: "为助手准备常用的规则，启用后新开的会话会按它工作。" },
@@ -66,28 +76,54 @@ const pages: { page: Page; icon: typeof House; title: string; subtitle: string }
 ];
 
 function AgentTabs({ value, busy, onChange }: { value: Agent; busy: boolean; onChange: (a: Agent) => void }) {
+  const ref = useRef<HTMLDivElement>(null);
+  const hover = useFluidHover(ref, { axis: "x" });
+  const shape = useShape();
+
   return (
-    <div className="agent-tabs" role="group" aria-label="选择助手">
-      {agents.map((item) => (
-        <button
-          key={item.agent}
-          type="button"
-          aria-pressed={value === item.agent}
-          disabled={busy}
-          onClick={() => onChange(item.agent)}
-        >
-          <BrandIcon agent={item.agent} size={15} />
-          {item.name}
-        </button>
-      ))}
+    <div
+      ref={ref}
+      className="relative inline-flex items-center gap-0.5 rounded-lg bg-surface-2 p-0.5 ring-1 ring-border"
+      role="group"
+      aria-label="选择助手"
+      {...hover.handlers}
+    >
+      <FluidHoverHighlight hover={hover} className={cn(shape.bg, "z-0")} />
+      {agents.map((item, index) => {
+        const active = value === item.agent;
+        return (
+          <button
+            key={item.agent}
+            ref={(el) => hover.registerItem(index, el)}
+            type="button"
+            aria-pressed={active}
+            disabled={busy}
+            onClick={() => onChange(item.agent)}
+            className={cn(
+              "relative z-10 inline-flex h-7 items-center gap-1.5 rounded-md px-3 whitespace-nowrap transition-colors duration-80 disabled:opacity-50",
+              typeClass("caption"),
+              active ? "bg-active text-foreground" : "text-muted-foreground hover:text-foreground",
+            )}
+            style={{ fontVariationSettings: active ? fontWeights.semibold : fontWeights.normal }}
+          >
+            <BrandIcon agent={item.agent} size={14} />
+            {item.name}
+          </button>
+        );
+      })}
     </div>
   );
 }
 
 const message = (err: unknown, fallback: string) => (typeof err === "string" ? err : fallback);
 
-export default function App() {
+function DesktopShell() {
   const { t } = useTranslation();
+  const shape = useShape();
+  const navRef = useRef<HTMLElement>(null);
+  const navHover = useFluidHover(navRef, { axis: "y" });
+  const lastFocusRefreshRef = useRef(0);
+
   const [state, setState] = useState<DesktopState>();
   const [page, setPage] = useState<Page>("home");
   const [pending, setPending] = useState(false);
@@ -104,10 +140,12 @@ export default function App() {
   const [clientChecking, setClientChecking] = useState(false);
   const [clientUpdating, setClientUpdating] = useState(false);
   const [updateProgress, setUpdateProgress] = useState("");
+
   const applyState = (next: DesktopState) =>
     setState((previous) =>
       !previous || (next.revision ?? 0) >= (previous.revision ?? 0) ? next : previous,
     );
+
   useEffect(() => {
     let active = true;
     let dispose: (() => void) | undefined;
@@ -190,6 +228,31 @@ export default function App() {
     };
   }, []);
 
+  const busy = pending || !!state?.view.busy || clientUpdating;
+  const unavailable = state?.engineReady === false || !!state?.engineError;
+  const installing = !!state?.installTasks?.some((task) => task.busy);
+
+  // Silently refresh balance and tier status when returning from the browser (e.g. after recharge).
+  useEffect(() => {
+    let active = true;
+    const onFocus = () => {
+      if (!active || busy || unavailable || installing || !state?.authorized) return;
+      const now = Date.now();
+      if (now - lastFocusRefreshRef.current < 5000) return;
+      lastFocusRefreshRef.current = now;
+      void desktopAction("refresh")
+        .then((next) => {
+          if (active) applyState(next);
+        })
+        .catch(() => {});
+    };
+    window.addEventListener("focus", onFocus);
+    return () => {
+      active = false;
+      window.removeEventListener("focus", onFocus);
+    };
+  }, [busy, unavailable, installing, state?.authorized]);
+
   async function checkClientUpdate() {
     setClientChecking(true);
     setError("");
@@ -222,9 +285,6 @@ export default function App() {
     setClientUpdating(false);
   }
 
-  const busy = pending || !!state?.view.busy || clientUpdating;
-  const unavailable = state?.engineReady === false || !!state?.engineError;
-  const installing = !!state?.installTasks?.some((task) => task.busy);
   // The daily check counts only once it finished cleanly; a failed one retries next launch.
   const updates = state?.toolUpdates;
   const checkedClean = updates && !updates.checking && !updates.error ? (updates.checkedAt ?? "") : "";
@@ -359,6 +419,7 @@ export default function App() {
       setError("没能复制，请手动选中并复制。");
     }
   }
+
   const view = state?.view;
   const viewKey = JSON.stringify(view ?? {});
   const dismissDialog = () => {
@@ -374,203 +435,299 @@ export default function App() {
   useEffect(() => {
     if (!view?.notice) return;
     const key = noticeKey;
-    const timer = window.setTimeout(() => setGoneNotice(key), 3000);
+    const timer = window.setTimeout(() => setGoneNotice(key), 4500);
     return () => window.clearTimeout(timer);
   }, [noticeKey]); // eslint-disable-line react-hooks/exhaustive-deps
   const modal =
     !!view && !["home", "working", "connecting"].includes(view.screen) && !view.busy && !pending && dismissedView !== viewKey;
   const current = pages.find((p) => p.page === page)!;
   const test = state?.version?.includes("-test");
+  const anyConnected = !!state?.statuses?.some((s) => s.state === "ok");
 
   return (
-    <div className="layout">
-      <aside className="sidebar">
-        <div className="brand">
-          <img src="/brand.svg" alt="" />
-          <span>接上AI</span>
-        </div>
-        <nav aria-label="主导航">
-          {pages.map(({ page: value, icon: Icon }) => (
-            <div key={value} className="nav-slot">
-              {value === "skills" && <span className="nav-section">进阶扩展（选配）</span>}
-              {value === "settings" && <span className="nav-divider" aria-hidden="true" />}
-              <button
-                type="button"
-                aria-current={page === value ? "page" : undefined}
-                onClick={() => go(value)}
-              >
-                <Icon size={16} aria-hidden="true" />
-                {t(`nav.${value}`)}
-              </button>
-            </div>
-          ))}
-        </nav>
-        <div className="sidebar-foot">
-          <div className={`wallet ${state?.balance?.low ? "low" : ""}`} aria-label="账户余额" role="region">
-            <p className="wallet-label">
-              <Wallet size={12} aria-hidden="true" />
-              账户余额
-            </p>
-            <p className="amount">
-              {state?.balance?.text ?? (state?.authorized ? "余额暂不可用" : "接上后查看余额")}
-            </p>
-            {state?.balance?.hint && (
-              <small className={state.balance.red ? "hint-red" : ""}>{state.balance.hint}</small>
-            )}
-            <div className="wallet-actions">
-              <Button variant="outline" size="sm" disabled={busy || unavailable} onClick={() => void act("recharge")}>
-                去网页充值
-                <ArrowUpRight size={13} />
-              </Button>
-              <Button
-                variant="ghost"
-                size="icon-compact"
-                aria-label="刷新状态与余额"
-                disabled={busy || unavailable}
-                onClick={() => void act("refresh")}
-              >
-                <RefreshCw size={14} />
-              </Button>
-            </div>
-          </div>
-          {state?.support && (
-            <button className="side-link" disabled={busy || unavailable} onClick={() => void act("support")}>
-              <LifeBuoy size={14} aria-hidden="true" />
-              联系客服
-            </button>
+    <div className="flex h-full min-h-0 w-full overflow-hidden bg-surface-1 text-foreground">
+      {/* Sidebar */}
+      <aside className="flex w-56 shrink-0 flex-col border-r border-border bg-surface-2 px-3 py-4">
+        <div className="mb-4 flex items-center gap-2.5 px-2">
+          <img src="/brand.svg" alt="" className="size-6 rounded-md" />
+          <span className={cn(typeClass("subtitle"), "text-foreground")} style={{ fontVariationSettings: fontWeights.semibold }}>
+            接上AI
+          </span>
+          {test && (
+            <Badge variant="solid" color="amber" size="compact">
+              测试版
+            </Badge>
           )}
-          <span className="version">
+        </div>
+
+        <nav ref={navRef} aria-label="主导航" className="relative flex flex-1 flex-col gap-0.5" {...navHover.handlers}>
+          <FluidHoverHighlight hover={navHover} className={cn(shape.bg, "z-0")} />
+          {pages.map(({ page: value, icon: Icon }, index) => {
+            const active = page === value;
+            return (
+              <div key={value} className="flex flex-col">
+                {value === "skills" && (
+                  <span className={cn(typeClass("micro"), "mt-3 mb-1 px-2 text-muted-foreground")}>
+                    进阶扩展（选配）
+                  </span>
+                )}
+                {value === "settings" && <span className="my-2 h-px bg-border" aria-hidden="true" />}
+                <button
+                  ref={(el) => navHover.registerItem(index, el)}
+                  type="button"
+                  aria-current={active ? "page" : undefined}
+                  onClick={() => go(value)}
+                  className={cn(
+                    "relative z-10 flex h-9 items-center gap-2.5 rounded-lg px-2.5 text-left transition-colors duration-80",
+                    typeClass("body"),
+                    active ? "bg-active text-foreground" : "text-muted-foreground hover:text-foreground",
+                  )}
+                  style={{ fontVariationSettings: active ? fontWeights.semibold : fontWeights.normal }}
+                >
+                  <Icon size={16} strokeWidth={active ? 2 : 1.5} aria-hidden="true" />
+                  <span>{t(`nav.${value}`)}</span>
+                </button>
+              </div>
+            );
+          })}
+        </nav>
+
+        <div className="mt-4 flex flex-col gap-2">
+          <Elevated offset={2} shadowLevel={1} className="rounded-xl">
+            <Card aria-label="账户余额" role="region" className="flex flex-col gap-2 rounded-xl p-3">
+              <div className="flex items-center justify-between gap-2">
+                <span className={cn(typeClass("caption"), "inline-flex items-center gap-1.5 text-muted-foreground")}>
+                  <Wallet size={12} aria-hidden="true" />
+                  账户余额
+                </span>
+                {state?.balance?.low && (
+                  <Badge variant="solid" color="amber" size="compact">
+                    偏低
+                  </Badge>
+                )}
+              </div>
+              <p className={cn(typeClass("subtitle"), "m-0 tabular-nums text-foreground")} style={{ fontVariationSettings: fontWeights.semibold }}>
+                {state?.balance?.text ?? (state?.authorized ? "余额暂不可用" : "接上后查看余额")}
+              </p>
+              {state?.balance?.hint && (
+                <small className={cn(typeClass("micro"), state.balance.red ? "text-destructive" : "text-muted-foreground")}>
+                  {state.balance.hint}
+                </small>
+              )}
+              <div className="flex items-center gap-1.5 pt-1">
+                <Button
+                  className="flex-1"
+                  variant="tertiary"
+                  size="compact"
+                  trailingIcon={ArrowUpRight}
+                  disabled={busy || unavailable}
+                  onClick={() => void act("recharge")}
+                >
+                  去网页充值
+                </Button>
+                <Tooltip content="刷新状态与余额" side="top">
+                  <Button
+                    variant="ghost"
+                    size="compact"
+                    aria-label="刷新状态与余额"
+                    disabled={busy || unavailable}
+                    onClick={() => void act("refresh")}
+                  >
+                    <RefreshCw size={14} aria-hidden="true" />
+                  </Button>
+                </Tooltip>
+              </div>
+            </Card>
+          </Elevated>
+
+          {state?.support && (
+            <Button
+              variant="ghost"
+              size="compact"
+              leadingIcon={LifeBuoy}
+              className="justify-start"
+              disabled={busy || unavailable}
+              onClick={() => void act("support")}
+            >
+              联系客服
+            </Button>
+          )}
+          <span className={cn(typeClass("micro"), "px-2 text-muted-foreground")}>
             接上AI {state?.version ?? ""}
-            {test && <em className="tag warn">测试版</em>}
           </span>
         </div>
       </aside>
-      <main className="content">
-        <header className="page-head">
-          <div>
-            <h1>{current.title}</h1>
-            <p>{current.subtitle}</p>
+
+      {/* Main Content */}
+      <main className="flex min-w-0 flex-1 flex-col overflow-y-auto px-7 py-6">
+        <div className="mx-auto flex w-full max-w-4xl flex-col gap-5">
+          <header className="flex flex-wrap items-start justify-between gap-4">
+            <div className="min-w-0">
+              <h1 className={cn(typeClass("display"), "m-0 text-foreground")} style={{ fontVariationSettings: fontWeights.bold }}>
+                {current.title}
+              </h1>
+              <p className={cn(typeClass("body"), "mt-1 mb-0 text-muted-foreground")}>{current.subtitle}</p>
+            </div>
+            {page === "home" && (
+              <div className="flex items-center gap-2">
+                {availableVersion && (
+                  <Button
+                    variant="ghost"
+                    size="compact"
+                    disabled={clientChecking || clientUpdating}
+                    onClick={() => void checkClientUpdate()}
+                  >
+                    接上AI 有更新
+                  </Button>
+                )}
+                {toolUpdatesReady.length > 0 ? (
+                  <Button
+                    variant="primary"
+                    size="compact"
+                    leadingIcon={RefreshCw}
+                    disabled={busy || unavailable || installing}
+                    onClick={() => void updateAll()}
+                  >
+                    全部更新
+                  </Button>
+                ) : (
+                  <Button
+                    variant="tertiary"
+                    size="compact"
+                    loading={!!state?.toolUpdates?.checking}
+                    leadingIcon={state?.toolUpdates?.checking ? undefined : RefreshCw}
+                    disabled={busy || unavailable || !!state?.toolUpdates?.checking}
+                    onClick={() => void checkAll()}
+                  >
+                    {state?.toolUpdates?.checking ? "正在检查" : "检查更新"}
+                  </Button>
+                )}
+              </div>
+            )}
+            {(page === "skills" || page === "mcp" || page === "prompts") && (
+              <AgentTabs value={panelAgent} busy={busy} onChange={(a) => void loadPanel(page, a)} />
+            )}
+          </header>
+
+          {test && page === "home" && (
+            <Banner status="warning" contrast="low" size="compact">
+              <BannerTitle>测试版，请勿用于正式账户。</BannerTitle>
+            </Banner>
+          )}
+
+          {/* Status & feedback banners */}
+          <div className="flex flex-col gap-2">
+            {(error || state?.engineError) && (
+              <Banner status="error" contrast="high" size="compact">
+                <BannerTitle>{state?.engineError || error}</BannerTitle>
+              </Banner>
+            )}
+            {busy && (
+              <Banner status="info" contrast="low" size="compact" icon={Loader2}>
+                <BannerTitle>{view?.line || "正在处理，请稍等……"}</BannerTitle>
+                {view?.cancellable && (
+                  <BannerActions>
+                    <BannerAction variant="secondary" disabled={cancelling} onClick={() => void cancelInstall()}>
+                      {cancelling ? "正在取消…" : "取消安装"}
+                    </BannerAction>
+                  </BannerActions>
+                )}
+              </Banner>
+            )}
+            {!state && !error && (
+              <Banner status="default" contrast="low" size="compact" icon={Loader2}>
+                <BannerTitle>正在检测本机助手……</BannerTitle>
+              </Banner>
+            )}
+            {notice && (
+              <Banner
+                status="success"
+                contrast="low"
+                size="compact"
+                dismissible
+                dismissLabel="关闭提示"
+                onDismiss={() => setGoneNotice(noticeKey)}
+              >
+                <BannerTitle>{notice}</BannerTitle>
+              </Banner>
+            )}
           </div>
-          {page === "home" && (
-            <div className="page-actions">
-              {availableVersion && (
-                <Button variant="ghost" size="sm" disabled={clientChecking || clientUpdating} onClick={() => void checkClientUpdate()}>
-                  接上AI 有更新
-                </Button>
-              )}
-              {toolUpdatesReady.length > 0 ? (
-                <Button size="sm" disabled={busy || unavailable || installing} onClick={() => void updateAll()}>
-                  <RefreshCw size={14} />
-                  全部更新
-                </Button>
-              ) : (
-                <Button variant="outline" size="sm" disabled={busy || unavailable || !!state?.toolUpdates?.checking} onClick={() => void checkAll()}>
-                  {state?.toolUpdates?.checking ? <Loader2 size={14} className="spin" /> : <RefreshCw size={14} />}
-                  {state?.toolUpdates?.checking ? "正在检查" : "检查更新"}
-                </Button>
-              )}
-            </div>
+
+          {page === "home" && (() => {
+            const neitherInstalled =
+              !!state?.tools?.length &&
+              state.tools.every((t) => t.inspected !== false && !t.cliInstalled && !t.guiInstalled);
+            return (
+              <>
+                <section className="grid grid-cols-1 gap-4 md:grid-cols-2" aria-label="助手">
+                  {agents.map((item) => (
+                    <AssistantCard
+                      key={item.agent}
+                      {...item}
+                      state={state}
+                      busy={busy}
+                      unavailable={unavailable}
+                      cancelling={cancelling}
+                      recommended={neitherInstalled && item.agent === "claude"}
+                      demotePrimary={neitherInstalled && item.agent === "codex"}
+                      act={(a, agent) => void act(a, agent)}
+                      cancelInstall={(agent) => void cancelInstall(agent)}
+                      onSwitchTier={(agent, tier) => void switchTier(agent, tier)}
+                    />
+                  ))}
+                </section>
+                {anyConnected && (
+                  <Banner status="default" contrast="low" size="compact">
+                    <BannerTitle>第一次打开就能直接发话</BannerTitle>
+                    <BannerDescription>
+                      打开命令行后，如遇到文件夹信任提示直接按回车确认；也可以先点卡片右下角「测试对话」验证已真通。
+                    </BannerDescription>
+                  </Banner>
+                )}
+              </>
+            );
+          })()}
+
+          {page === "home" && state?.toolUpdates?.error && (
+            <p className={cn(typeClass("caption"), "m-0 text-muted-foreground")} role="status">
+              {state.toolUpdates.error}
+            </p>
           )}
-          {(page === "skills" || page === "mcp" || page === "prompts") && (
-            <AgentTabs value={panelAgent} busy={busy} onChange={(a) => void loadPanel(page, a)} />
+
+          {page === "skills" && (
+            <SkillsPanel key={panelAgent} agent={panelAgent} skills={state?.skills?.[panelAgent] ?? []} busy={busy} run={runSkill} />
           )}
-        </header>
-        {test && page === "home" && <p className="test-note">测试版，请勿用于正式账户。</p>}
-        <div className="status-slot">
-          {(error || state?.engineError) && (
-            <div className="banner error" role="alert">
-              <CircleAlert size={16} />
-              {state?.engineError || error}
-            </div>
+          {page === "mcp" && (
+            <McpPanel key={panelAgent} agent={panelAgent} servers={state?.mcp?.[panelAgent] ?? []} busy={busy} run={runMcp} />
           )}
-          {busy && (
-            <div className="banner" role="status">
-              <Loader2 size={16} className="spin" />
-              {view?.line || "正在处理，请稍等……"}
-              {view?.cancellable && (
-                <Button variant="outline" size="sm" disabled={cancelling} onClick={() => void cancelInstall()}>
-                  {cancelling ? "正在取消…" : "取消安装"}
-                </Button>
-              )}
-            </div>
+          {page === "prompts" && (
+            <PromptsPanel
+              key={panelAgent}
+              agent={panelAgent}
+              prompts={state?.prompts?.[panelAgent] ?? []}
+              busy={busy}
+              run={runPrompt}
+            />
           )}
-          {!state && !error && (
-            <div className="banner" role="status">
-              <Loader2 size={16} className="spin" />
-              正在检测本机助手……
-            </div>
+          {page === "settings" && (
+            <SettingsPage
+              version={state?.version}
+              availableVersion={availableVersion}
+              clientChecking={clientChecking}
+              clientUpdating={clientUpdating}
+              toolChecking={!!state?.toolUpdates?.checking}
+              toolError={state?.toolUpdates?.error}
+              checkedAt={state?.toolUpdates?.checkedAt}
+              installing={installing}
+              disabled={busy || unavailable}
+              onClientUpdate={() => void checkClientUpdate()}
+              onToolUpdates={() => void act("check-updates")}
+              onRestore={() => void act("restore")}
+            />
           )}
         </div>
-        {page === "home" && (() => {
-          const neitherInstalled =
-            !!state?.tools?.length &&
-            state.tools.every((t) => t.inspected !== false && !t.cliInstalled && !t.guiInstalled);
-          return (
-            <section className="assistants" aria-label="助手">
-              {agents.map((item) => (
-                <AssistantCard
-                  key={item.agent}
-                  {...item}
-                  state={state}
-                  busy={busy}
-                  unavailable={unavailable}
-                  cancelling={cancelling}
-                  recommended={neitherInstalled && item.agent === "claude"}
-                  demotePrimary={neitherInstalled && item.agent === "codex"}
-                  act={(a, agent) => void act(a, agent)}
-                  cancelInstall={(agent) => void cancelInstall(agent)}
-                  onSwitchTier={(agent, tier) => void switchTier(agent, tier)}
-                />
-              ))}
-            </section>
-          );
-        })()}
-        {page === "home" && state?.toolUpdates?.error && (
-          <p className="panel-note" role="status">
-            {state.toolUpdates.error}
-          </p>
-        )}
-        {page === "skills" && (
-          <SkillsPanel key={panelAgent} agent={panelAgent} skills={state?.skills?.[panelAgent] ?? []} busy={busy} run={runSkill} />
-        )}
-        {page === "mcp" && (
-          <McpPanel key={panelAgent} agent={panelAgent} servers={state?.mcp?.[panelAgent] ?? []} busy={busy} run={runMcp} />
-        )}
-        {page === "prompts" && (
-          <PromptsPanel
-            key={panelAgent}
-            agent={panelAgent}
-            prompts={state?.prompts?.[panelAgent] ?? []}
-            busy={busy}
-            run={runPrompt}
-          />
-        )}
-        {page === "settings" && (
-          <SettingsPage
-            version={state?.version}
-            availableVersion={availableVersion}
-            clientChecking={clientChecking}
-            clientUpdating={clientUpdating}
-            toolChecking={!!state?.toolUpdates?.checking}
-            toolError={state?.toolUpdates?.error}
-            checkedAt={state?.toolUpdates?.checkedAt}
-            installing={installing}
-            disabled={busy || unavailable}
-            onClientUpdate={() => void checkClientUpdate()}
-            onToolUpdates={() => void act("check-updates")}
-            onRestore={() => void act("restore")}
-          />
-        )}
       </main>
-      {notice && (
-        <div className="toast" role="status">
-          <CheckCircle2 size={16} aria-hidden="true" />
-          <span>{notice}</span>
-          <button type="button" aria-label="关闭提示" onClick={() => setGoneNotice(noticeKey)}>
-            ×
-          </button>
-        </div>
-      )}
+
       <OperationDialog
         open={modal}
         view={view}
@@ -589,5 +746,15 @@ export default function App() {
         onInstall={() => void installClientUpdate()}
       />
     </div>
+  );
+}
+
+export default function App() {
+  return (
+    <FluidProvider>
+      <TooltipProvider>
+        <DesktopShell />
+      </TooltipProvider>
+    </FluidProvider>
   );
 }

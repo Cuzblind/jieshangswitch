@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/url"
@@ -344,6 +345,9 @@ func (a *App) DesktopAction(r DesktopRequest) error {
 			a.setView(errorView("reauth", r.Agent))
 		}
 		_ = a.desktopCheck(r.Agent)
+		if secret, ok := a.env.Configured(r.Agent, a.origin); ok {
+			a.syncDesktopCatalog(r.Agent, secret)
+		}
 		a.desktopSuccess(r.Agent)
 		a.desktopRefresh()
 	case "install":
@@ -396,10 +400,30 @@ func (a *App) DesktopAction(r DesktopRequest) error {
 			a.setView(View{Screen: "home", Notice: "连接检查通过。"})
 		}
 		a.desktopRefresh()
+	case "test-chat":
+		a.setView(working(r.Agent, "正在发送真实测试消息……"))
+		usedModel, elapsed, err := a.testChat(r.Agent)
+		if err != nil {
+			a.setView(View{Screen: "home"})
+			return err
+		}
+		sec := elapsed.Seconds()
+		if sec < 0.1 {
+			sec = 0.1
+		}
+		a.setView(View{
+			Screen: "home",
+			Agent:  r.Agent,
+			Notice: fmt.Sprintf("对话已通（%s · %.1fs），打开 %s 就能直接发话。", usedModel, sec, agentName(r.Agent)),
+		})
+		a.desktopRefresh()
 	case "switch-tier":
 		label, err := a.switchTier(r.Agent, r.Tier)
 		if err != nil {
 			return err
+		}
+		if secret, ok := a.env.Configured(r.Agent, a.origin); ok {
+			a.syncDesktopCatalog(r.Agent, secret)
 		}
 		a.desktopRefresh()
 		a.setView(View{Screen: "home", Agent: r.Agent, Notice: "已将 " + agentName(r.Agent) + " 切到「" + label + "」线路，下一个任务生效。"})
@@ -435,6 +459,9 @@ func (a *App) DesktopAction(r DesktopRequest) error {
 			a.setView(errorView("reauth", r.Agent))
 		}
 		_ = a.desktopCheck(r.Agent)
+		if secret, ok := a.env.Configured(r.Agent, a.origin); ok {
+			a.syncDesktopCatalog(r.Agent, secret)
+		}
 		a.desktopSuccess(r.Agent)
 		a.desktopRefresh()
 	case "restore":

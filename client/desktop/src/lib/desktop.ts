@@ -17,6 +17,7 @@ export type Action =
   | "cancel-install"
   | "launch"
   | "check"
+  | "test-chat"
   | "switch-tier"
   | "repair"
   | "restore"

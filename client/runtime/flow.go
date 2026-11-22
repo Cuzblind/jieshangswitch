@@ -313,6 +313,186 @@ func (a *App) syncDesktopCatalog(agent, secret string) {
 	}
 }
 
+// ensureClaudeOnboarding surgically sets hasCompletedOnboarding=true in ~/.claude.json
+// while preserving mcpServers and all existing user fields. Corrupt JSON is never overwritten.
+func ensureClaudeOnboarding() error {
+	path := claudeJSONPath()
+	doc := map[string]any{}
+	if raw, err := os.ReadFile(path); err == nil {
+		if len(bytes.TrimSpace(raw)) > 0 {
+			if err := json.Unmarshal(raw, &doc); err != nil || doc == nil {
+				return err
+			}
+		}
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+	if done, ok := doc["hasCompletedOnboarding"].(bool); ok && done {
+		return nil
+	}
+	doc["hasCompletedOnboarding"] = true
+	out, err := json.MarshalIndent(doc, "", "  ")
+	if err != nil {
+		return err
+	}
+	return writePrivateFile(path, append(out, '\n'))
+}
+
+// testChat sends a minimal real inference request (max_tokens=8) to verify the user can
+// actually send their first message, not just list /v1/models.
+func (a *App) testChat(agent string) (string, time.Duration, error) {
+	secret, ok := a.env.Configured(agent, a.origin)
+	if !ok || secret == "" {
+		return "", 0, errors.New("请先接上这个助手再测试对话")
+	}
+	model := "claude-sonnet-4-5"
+	if agent == "codex" {
+		model = "gpt-5"
+	}
+	if cat, err := a.fetchDesktopCatalog(secret); err == nil && cat != nil && cat.Enabled {
+		if cat.DefaultModel != "" {
+			model = cat.DefaultModel
+		} else if len(cat.Models) > 0 && cat.Models[0].ID != "" {
+			model = cat.Models[0].ID
+		}
+	}
+	client := a.env.HTTP
+	if client == nil {
+		client = &http.Client{Timeout: 25 * time.Second}
+	} else {
+		copied := *client
+		if copied.Timeout == 0 || copied.Timeout < 25*time.Second {
+			copied.Timeout = 25 * time.Second
+		}
+		client = &copied
+	}
+	start := time.Now()
+	if agent == "claude" {
+		payload, _ := json.Marshal(map[string]any{
+			"model":      model,
+			"max_tokens": 8,
+			"messages": []map[string]string{
+				{"role": "user", "content": "Reply OK"},
+			},
+		})
+		req, _ := http.NewRequest(http.MethodPost, a.origin+"/v1/messages", bytes.NewReader(payload))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("x-api-key", secret)
+		req.Header.Set("Authorization", "Bearer "+secret)
+		req.Header.Set("anthropic-version", "2023-06-01")
+		resp, err := client.Do(req)
+		if err != nil {
+			return "", 0, errors.New("暂时连不上服务器，请检查网络后再试")
+		}
+		defer resp.Body.Close()
+		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<16))
+		if err := classifyChatProbeFailure(resp.StatusCode, raw); err != nil {
+			return "", 0, err
+		}
+		var out struct {
+			Model   string `json:"model"`
+			Content []any  `json:"content"`
+		}
+		if err := json.Unmarshal(raw, &out); err != nil || len(out.Content) == 0 {
+			return "", 0, errors.New("服务器返回了异常响应，可切换其他线路后再试")
+		}
+		if out.Model != "" {
+			model = out.Model
+		}
+		return model, time.Since(start), nil
+	}
+
+	// Codex uses OpenAI Responses API (/v1/responses), falling back to /v1/chat/completions if unsupported.
+	responsesPayload, _ := json.Marshal(map[string]any{
+		"model":             model,
+		"max_output_tokens": 16,
+		"input":             "Reply OK",
+	})
+	req, _ := http.NewRequest(http.MethodPost, a.origin+"/v1/responses", bytes.NewReader(responsesPayload))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+secret)
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", 0, errors.New("暂时连不上服务器，请检查网络后再试")
+	}
+	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<16))
+	statusCode := resp.StatusCode
+	resp.Body.Close()
+	if statusCode == http.StatusNotFound || statusCode == http.StatusMethodNotAllowed {
+		chatPayload, _ := json.Marshal(map[string]any{
+			"model":      model,
+			"max_tokens": 8,
+			"messages": []map[string]string{
+				{"role": "user", "content": "Reply OK"},
+			},
+		})
+		req2, _ := http.NewRequest(http.MethodPost, a.origin+"/v1/chat/completions", bytes.NewReader(chatPayload))
+		req2.Header.Set("Content-Type", "application/json")
+		req2.Header.Set("Authorization", "Bearer "+secret)
+		resp2, err2 := client.Do(req2)
+		if err2 != nil {
+			return "", 0, errors.New("暂时连不上服务器，请检查网络后再试")
+		}
+		defer resp2.Body.Close()
+		raw, _ = io.ReadAll(io.LimitReader(resp2.Body, 1<<16))
+		if err := classifyChatProbeFailure(resp2.StatusCode, raw); err != nil {
+			return "", 0, err
+		}
+		var out struct {
+			Model   string `json:"model"`
+			Choices []any  `json:"choices"`
+		}
+		if err := json.Unmarshal(raw, &out); err != nil || len(out.Choices) == 0 {
+			return "", 0, errors.New("服务器返回了异常响应，可切换其他线路后再试")
+		}
+		if out.Model != "" {
+			model = out.Model
+		}
+		return model, time.Since(start), nil
+	}
+	if err := classifyChatProbeFailure(statusCode, raw); err != nil {
+		return "", 0, err
+	}
+	var out struct {
+		Model      string `json:"model"`
+		Output     []any  `json:"output"`
+		OutputText string `json:"output_text"`
+	}
+	if err := json.Unmarshal(raw, &out); err != nil || (len(out.Output) == 0 && strings.TrimSpace(out.OutputText) == "") {
+		return "", 0, errors.New("服务器返回了异常响应，可切换其他线路后再试")
+	}
+	if out.Model != "" {
+		model = out.Model
+	}
+	return model, time.Since(start), nil
+}
+
+func classifyChatProbeFailure(status int, raw []byte) error {
+	lower := strings.ToLower(string(raw))
+	if status == http.StatusUnauthorized {
+		return errors.New("连接凭证已失效，请点「一键修复」或重新接上")
+	}
+	if status == http.StatusPaymentRequired || strings.Contains(lower, "insufficient") || strings.Contains(lower, "quota") || strings.Contains(lower, "余额") {
+		return errors.New("账户余额不足，请先点击左下角「去网页充值」")
+	}
+	if status == http.StatusTooManyRequests || status >= 500 {
+		return errors.New("当前线路暂时拥挤或上游异常，可切换到其他线路后再试")
+	}
+	if status != http.StatusOK {
+		return errors.New("对话测试未通过，可切换线路或点击「检查连接」排查")
+	}
+	var envelope struct {
+		Success *bool `json:"success"`
+		Error   any   `json:"error"`
+	}
+	if json.Unmarshal(raw, &envelope) == nil {
+		if (envelope.Success != nil && !*envelope.Success) || envelope.Error != nil {
+			return errors.New("上游模型暂时拒绝请求，可切换到其他线路后再试")
+		}
+	}
+	return nil
+}
+
 // fetchBalance reads the user's balance with the local connection (no login).
 type connState int
 
@@ -533,6 +713,10 @@ func (a *App) finish(agent string, write bool) {
 		if err := a.env.Write(agent, a.origin, s.secret); err != nil {
 			a.fail(agent, errOther, "config-write-failed", s.ticket)
 			return
+		}
+		if agent == "claude" {
+			// Skip Claude Code's first-run official OAuth onboarding wall on fresh machines.
+			_ = ensureClaudeOnboarding()
 		}
 	}
 	if cli == "failed" {

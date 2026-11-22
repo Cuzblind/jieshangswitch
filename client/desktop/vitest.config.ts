@@ -3,7 +3,12 @@ import path from "node:path";
 
 export default defineConfig({
   esbuild: { jsx: "automatic" },
-  resolve: { alias: { "@": path.resolve(import.meta.dirname, "src") } },
+  resolve: {
+    alias: {
+      "@": path.resolve(import.meta.dirname, "src"),
+      "next/link": path.resolve(import.meta.dirname, "src/lib/next-link-shim.tsx"),
+    },
+  },
   test: {
     environment: "jsdom",
     setupFiles: ["./src/test-setup.ts"],

@@ -1,10 +1,57 @@
-import { ArrowUpRight, CheckCircle2, Circle, Download, Loader2, Monitor, Play, SquareTerminal, Wrench } from "lucide-react";
+import { useRef } from "react";
+import {
+  Activity,
+  ArrowUpRight,
+  CheckCircle2,
+  Circle,
+  Download,
+  Loader2,
+  MessageSquare,
+  Monitor,
+  Play,
+  SquareTerminal,
+  Wrench,
+} from "lucide-react";
+import { Badge, type BadgeColor } from "@/components/ui/badge";
+import { Banner, BannerDescription, BannerTitle } from "@/components/ui/banner";
 import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
+import { FluidHoverHighlight } from "@/components/fluid-hover-highlight";
 import { BrandIcon } from "@/components/BrandIcon";
 import { InstallSteps } from "@/components/InstallSteps";
+import { useFluidHover } from "@/hooks/use-fluid-hover";
+import { Elevated } from "@/lib/elevated";
+import { fontWeights } from "@/lib/font-weight";
+import { useShape } from "@/lib/shape-context";
+import { typeClass } from "@/lib/size-context";
+import { cn } from "@/lib/utils";
 import type { Action, Agent, DesktopState } from "@/lib/desktop";
 
 type Tool = NonNullable<DesktopState["tools"]>[number];
+
+const TIER_HINTS: Record<string, string> = {
+  economy: "倍率更低，适合日常问答与轻度任务",
+  balanced: "速度与成本均衡，适合绝大多数日常开发与写作",
+  stable: "高可用通道，适合长上下文与重要复杂任务",
+};
+
+function statusBadgeColor(state?: string, checking?: boolean): BadgeColor {
+  if (checking) return "gray";
+  switch (state) {
+    case "ok":
+      return "green";
+    case "checking":
+    case "expired":
+    case "offline":
+    case "conflict":
+      return "amber";
+    case "broken":
+    case "disabled":
+      return "red";
+    default:
+      return "gray";
+  }
+}
 
 // Nothing is missing before the engine has finished its first probe.
 export function missingTool(tool: Tool | undefined): boolean {
@@ -34,29 +81,111 @@ function ComponentRow({
   install?: { name: string; disabled: boolean; onClick: () => void };
 }) {
   return (
-    <li className={installed && !pending ? "on" : ""}>
-      <Icon size={14} aria-hidden="true" />
-      <span className="component-name">{label}</span>
-      {pending ? (
-        <span className="component-value pending" aria-label="检测中" />
-      ) : installed ? (
-        <span className="component-value">
-          <CheckCircle2 size={12} aria-hidden="true" />
-          {version || "已安装"}
+    <li className="flex min-h-9 items-center justify-between gap-3 border-b border-border/60 py-1.5 last:border-b-0">
+      <div className="flex items-center gap-2 text-muted-foreground">
+        <Icon size={14} strokeWidth={1.75} aria-hidden="true" className={installed && !pending ? "text-foreground" : ""} />
+        <span className={cn(typeClass("body"), installed && !pending ? "text-foreground" : "text-muted-foreground")}>
+          {label}
         </span>
-      ) : install ? (
-        <Button className="component-install" variant="ghost" size="sm" disabled={install.disabled} onClick={install.onClick}>
-          <Download size={12} aria-hidden="true" />
-          安装{label}
-          <span className="sr-only"> · {install.name}</span>
-        </Button>
-      ) : (
-        <span className="component-value">
-          <Circle size={12} aria-hidden="true" />
-          {available ? "待安装" : "暂不支持"}
-        </span>
-      )}
+      </div>
+      <div className="flex items-center">
+        {pending ? (
+          <span
+            aria-label="检测中"
+            className="inline-block h-4 w-16 animate-pulse rounded bg-hover"
+          />
+        ) : installed ? (
+          <Badge variant="ghost" color="green" size="compact">
+            {version || "已安装"}
+          </Badge>
+        ) : install ? (
+          <Button
+            variant="ghost"
+            size="compact"
+            leadingIcon={Download}
+            disabled={install.disabled}
+            onClick={install.onClick}
+          >
+            安装{label}
+            <span className="sr-only"> · {install.name}</span>
+          </Button>
+        ) : (
+          <Badge variant="ghost" color="gray" size="compact">
+            {available ? "待安装" : "暂不支持"}
+          </Badge>
+        )}
+      </div>
     </li>
+  );
+}
+
+function TierSelector({
+  agent,
+  name,
+  tier,
+  tiers,
+  disabled,
+  onSwitchTier,
+}: {
+  agent: Agent;
+  name: string;
+  tier?: string;
+  tiers: NonNullable<NonNullable<DesktopState["statuses"]>[number]["tiers"]>;
+  disabled: boolean;
+  onSwitchTier: (agent: Agent, tier: string) => void;
+}) {
+  const containerRef = useRef<HTMLDivElement>(null);
+  const hover = useFluidHover(containerRef, { axis: "x" });
+  const shape = useShape();
+  const activeTier = tiers.find((t) => t.name === tier) ?? tiers[0];
+  const hint = activeTier ? TIER_HINTS[activeTier.name] : "";
+
+  return (
+    <div className="flex flex-col gap-1.5 rounded-lg bg-surface-2 px-3 py-2.5 ring-1 ring-border/70">
+      <div className="flex items-center justify-between gap-2">
+        <span className={cn(typeClass("caption"), "text-muted-foreground")}>当前线路</span>
+        {activeTier?.recommended && (
+          <Badge variant="solid" color="accent" size="compact">
+            推荐
+          </Badge>
+        )}
+      </div>
+      <div
+        ref={containerRef}
+        role="group"
+        aria-label={`${name} 线路档位`}
+        className="relative flex items-center gap-0.5 rounded-lg bg-background p-0.5 ring-1 ring-border/70"
+        {...hover.handlers}
+      >
+        <FluidHoverHighlight hover={hover} className={cn(shape.bg, "z-0")} />
+        {tiers.map((t, index) => {
+          const active = t.name === tier;
+          return (
+            <button
+              key={t.name}
+              ref={(el) => hover.registerItem(index, el)}
+              type="button"
+              aria-pressed={active}
+              disabled={disabled}
+              onClick={() => {
+                if (!active) onSwitchTier(agent, t.name);
+              }}
+              className={cn(
+                "relative z-10 flex h-7 flex-1 items-center justify-center rounded-md px-2 whitespace-nowrap transition-colors duration-80 disabled:opacity-50",
+                typeClass("caption"),
+                active
+                  ? "bg-active text-foreground"
+                  : "text-muted-foreground hover:text-foreground",
+              )}
+              style={{ fontVariationSettings: active ? fontWeights.semibold : fontWeights.normal }}
+            >
+              {t.label}
+            </button>
+          );
+        })}
+      </div>
+      {hint && <p className={cn(typeClass("micro"), "m-0 text-muted-foreground")}>{hint}</p>}
+    </div>
   );
 }
 
@@ -100,7 +229,16 @@ export function AssistantCard({
   const disabled = s?.state === "disabled";
   const needsRepair = ["broken", "offline", "expired", "conflict"].includes(s?.state ?? "");
   // Left: the next step, which is opening the CLI once everything works.
-  const action: Action = needsInstall || missing ? "install-suite" : ready ? "launch" : needsRepair ? "repair" : state?.authorized ? "connect" : "open-web";
+  const action: Action =
+    needsInstall || missing
+      ? "install-suite"
+      : ready
+        ? "launch"
+        : needsRepair
+          ? "repair"
+          : state?.authorized
+            ? "connect"
+            : "open-web";
   const label = task?.busy
     ? "正在安装…"
     : checking
@@ -124,144 +262,181 @@ export function AssistantCard({
   const desktopReady = ready && !guiChecking && !!tool?.guiInstalled;
   const pending = !tool || checking;
   const showCheck = !checking && !!s && !missing && !needsInstall && s.state !== "none";
+  const primaryLeadingIcon = checking
+    ? Loader2
+    : ready
+      ? SquareTerminal
+      : missing || needsInstall
+        ? Download
+        : needsRepair
+          ? Wrench
+          : ArrowUpRight;
+
+  const isPrimaryCta = !desktopReady && !demotePrimary;
+
   return (
-    <article className={`assistant ${agent}`} aria-label={name}>
-      <header className="assistant-head">
-        <div className="assistant-icon">
-          <BrandIcon agent={agent} size={24} />
-        </div>
-        <div className="assistant-title">
-          <h2>{name}</h2>
-          {recommended && <span className="rec-badge">推荐先装</span>}
-          <span className={`status ${checking ? "checking" : (s?.state ?? "checking")}`}>
-            {checking ? "正在检测" : (s?.badge ?? "正在检测")}
-          </span>
-        </div>
-      </header>
-      <p className="desc">{s?.note || description}</p>
-      <ul className="components" aria-label={`${name} 组件`}>
-        <ComponentRow
-          icon={SquareTerminal}
-          label="命令行"
-          installed={!!tool?.cliInstalled}
-          version={tool?.cliVersion}
-          pending={pending}
-        />
-        <ComponentRow
-          icon={Monitor}
-          label="桌面版"
-          installed={!!tool?.guiInstalled}
-          version={tool?.guiVersion}
-          available={tool?.guiAvailable ?? true}
-          pending={!tool || guiChecking}
-          install={
-            needsDesktop
-              ? { name, disabled: off || !!task?.busy, onClick: () => act("install-suite", agent) }
-              : undefined
-          }
-        />
-      </ul>
-      {failure && (
-        <p className="failure-code" role="alert">
-          {failure.message}
-          <span className="failure-kind">（{failure.nativeCode || failure.code}）</span>
-        </p>
-      )}
-      {task?.busy && <InstallSteps busy phase={running?.phase} source={running?.source} />}
-      {task && (
-        <div className={`install-progress ${task.error ? "error" : ""}`} role={task.error ? "alert" : "status"}>
-          <span>{task.error || task.line}</span>
-          <div>
-            {task.busy && (
-              <Button variant="ghost" size="sm" disabled={cancelling} onClick={() => cancelInstall(agent)}>
-                取消安装
-              </Button>
+    <Elevated offset={2} shadowLevel={2} className="flex flex-col rounded-xl">
+      <article aria-label={name} className="flex h-full flex-col">
+        <Card className="flex h-full flex-col gap-4 rounded-xl p-5">
+          <CardHeader className="p-0">
+            <div className="flex items-start justify-between gap-3">
+              <div className="flex items-center gap-3 min-w-0">
+                <div className="flex size-10 shrink-0 items-center justify-center rounded-lg bg-surface-2 ring-1 ring-border">
+                  <BrandIcon agent={agent} size={22} />
+                </div>
+                <div className="min-w-0">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <CardTitle className={cn(typeClass("title"), "m-0 text-foreground")} style={{ fontVariationSettings: fontWeights.semibold }}>
+                      {name}
+                    </CardTitle>
+                    {recommended && (
+                      <Badge variant="solid" color="accent" size="compact">
+                        推荐先装
+                      </Badge>
+                    )}
+                  </div>
+                  <div className="mt-1">
+                    <Badge variant="dot" color={statusBadgeColor(s?.state, checking)} size="compact">
+                      {checking ? "正在检测" : (s?.badge ?? "正在检测")}
+                    </Badge>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <CardDescription className={cn(typeClass("body"), "mt-2 text-muted-foreground")}>
+              {s?.note || description}
+            </CardDescription>
+          </CardHeader>
+
+          <CardContent className="flex flex-1 flex-col gap-3 p-0">
+            <ul className="m-0 flex flex-col p-0 list-none" aria-label={`${name} 组件`}>
+              <ComponentRow
+                icon={SquareTerminal}
+                label="命令行"
+                installed={!!tool?.cliInstalled}
+                version={tool?.cliVersion}
+                pending={pending}
+              />
+              <ComponentRow
+                icon={Monitor}
+                label="桌面版"
+                installed={!!tool?.guiInstalled}
+                version={tool?.guiVersion}
+                available={tool?.guiAvailable ?? true}
+                pending={!tool || guiChecking}
+                install={
+                  needsDesktop
+                    ? { name, disabled: off || !!task?.busy, onClick: () => act("install-suite", agent) }
+                    : undefined
+                }
+              />
+            </ul>
+
+            {failure && (
+              <Banner status="error" contrast="low" size="compact">
+                <BannerTitle>{failure.message}</BannerTitle>
+                <BannerDescription>错误码：{failure.nativeCode || failure.code}</BannerDescription>
+              </Banner>
             )}
-            {!task.busy && (task.error || task.cancelled) && (
-              <Button variant="ghost" size="sm" disabled={off} onClick={() => act("install-suite", agent)}>
-                重试安装
-              </Button>
+
+            {task?.busy && <InstallSteps busy phase={running?.phase} source={running?.source} />}
+
+            {task && (
+              <div
+                role={task.error ? "alert" : "status"}
+                className={cn(
+                  "flex flex-wrap items-center justify-between gap-2 rounded-lg px-3 py-2",
+                  typeClass("caption"),
+                  task.error ? "bg-destructive-light text-destructive" : "bg-surface-2 text-muted-foreground",
+                )}
+              >
+                <span className="min-w-0 flex-1">{task.error || task.line}</span>
+                <div className="flex items-center gap-1">
+                  {task.busy && (
+                    <Button variant="ghost" size="compact" disabled={cancelling} onClick={() => cancelInstall(agent)}>
+                      取消安装
+                    </Button>
+                  )}
+                  {!task.busy && (task.error || task.cancelled) && (
+                    <Button variant="ghost" size="compact" disabled={off} onClick={() => act("install-suite", agent)}>
+                      重试安装
+                    </Button>
+                  )}
+                  {!task.busy && task.error && (
+                    <Button variant="ghost" size="compact" disabled={off} onClick={() => act("support")}>
+                      查看诊断
+                    </Button>
+                  )}
+                </div>
+              </div>
             )}
-            {!task.busy && task.error && (
-              <Button variant="ghost" size="sm" disabled={off} onClick={() => act("support")}>
-                查看诊断
-              </Button>
+
+            {ready && s?.tiers && s.tiers.length > 1 && onSwitchTier && (
+              <TierSelector
+                agent={agent}
+                name={name}
+                tier={s.tier}
+                tiers={s.tiers}
+                disabled={off || !!task?.busy || disabled}
+                onSwitchTier={onSwitchTier}
+              />
             )}
-          </div>
-        </div>
-      )}
-      {ready && s?.tiers && s.tiers.length > 1 && onSwitchTier && (
-        <div className="tier-switch" role="group" aria-label={`${name} 线路档位`}>
-          <span className="tier-switch-label">线路</span>
-          <div className="tier-switch-pills">
-            {s.tiers.map((t) => {
-              const active = t.name === s.tier;
-              return (
-                <button
-                  key={t.name}
-                  type="button"
-                  aria-pressed={active}
-                  disabled={off || !!task?.busy || disabled}
-                  className={active ? "active" : ""}
-                  onClick={() => {
-                    if (!active) onSwitchTier(agent, t.name);
-                  }}
+          </CardContent>
+
+          <CardFooter className="mt-auto flex flex-col items-stretch gap-2 p-0 pt-2">
+            <div className="flex flex-wrap items-center gap-2">
+              <Button
+                className={cn("flex-1", isPrimaryCta && "primary")}
+                variant={isPrimaryCta ? "primary" : "tertiary"}
+                loading={!!task?.busy}
+                leadingIcon={task?.busy ? undefined : primaryLeadingIcon}
+                disabled={off || checking || !!task?.busy || !s || disabled || s.state === "checking"}
+                onClick={() => act(action, agent)}
+              >
+                {label}
+                <span className="sr-only"> · {name}</span>
+              </Button>
+              {desktopReady && (
+                <Button
+                  className="primary flex-1"
+                  variant="primary"
+                  leadingIcon={Play}
+                  disabled={off || !!task?.busy}
+                  onClick={() => act("launch-gui", agent)}
                 >
-                  {t.label}
-                </button>
-              );
-            })}
-          </div>
-        </div>
-      )}
-      <div className="assistant-actions">
-        <Button
-          className={desktopReady ? "" : demotePrimary ? "secondary-fill" : "primary"}
-          size="lg"
-          variant={ready && !checking && !desktopReady ? "default" : "outline"}
-          disabled={off || checking || !!task?.busy || !s || disabled || s.state === "checking"}
-          onClick={() => act(action, agent)}
-        >
-          {checking ? (
-            <Loader2 size={14} className="spin" />
-          ) : ready ? (
-            <SquareTerminal size={14} />
-          ) : missing || needsInstall ? (
-            <Download size={14} />
-          ) : needsRepair ? (
-            <Wrench size={14} />
-          ) : (
-            <ArrowUpRight size={14} />
-          )}
-          {label}
-          <span className="sr-only"> · {name}</span>
-        </Button>
-        {desktopReady && (
-          <Button
-            className="primary"
-            size="lg"
-            variant="default"
-            disabled={off || !!task?.busy}
-            onClick={() => act("launch-gui", agent)}
-          >
-            <Play size={14} />
-            打开桌面版
-            <span className="sr-only"> · {name}</span>
-          </Button>
-        )}
-      </div>
-      {showCheck && (
-        <div className="tools">
-          <Button
-            variant="ghost"
-            size="sm"
-            disabled={off || !!task?.busy || disabled}
-            onClick={() => act("check", agent)}
-          >
-            检查连接<span className="sr-only"> · {name}</span>
-          </Button>
-        </div>
-      )}
-    </article>
+                  打开桌面版
+                  <span className="sr-only"> · {name}</span>
+                </Button>
+              )}
+            </div>
+
+            {showCheck && (
+              <div className="flex items-center justify-end gap-1 border-t border-border/60 pt-2">
+                <Button
+                  variant="ghost"
+                  size="compact"
+                  leadingIcon={Activity}
+                  disabled={off || !!task?.busy || disabled}
+                  onClick={() => act("check", agent)}
+                >
+                  检查连接<span className="sr-only"> · {name}</span>
+                </Button>
+                {ready && (
+                  <Button
+                    variant="ghost"
+                    size="compact"
+                    leadingIcon={MessageSquare}
+                    disabled={off || !!task?.busy || disabled}
+                    onClick={() => act("test-chat", agent)}
+                  >
+                    测试对话<span className="sr-only"> · {name}</span>
+                  </Button>
+                )}
+              </div>
+            )}
+          </CardFooter>
+        </Card>
+      </article>
+    </Elevated>
   );
 }
