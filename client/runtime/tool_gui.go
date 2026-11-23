@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -137,10 +138,21 @@ func pickOverrideRelease(cfg map[string]map[string]string, agent, key, format st
 	if !allowedOverrideMirrorURL(raw) {
 		return guiRelease{}, false
 	}
-	if strings.HasSuffix(strings.ToLower(raw), ".zip") {
+	if u, err := url.Parse(raw); err == nil && strings.HasSuffix(strings.ToLower(u.Path), ".zip") {
 		format = "zip"
 	}
 	return guiRelease{URL: raw, Format: format}, true
+}
+
+func isZIPFile(path string) bool {
+	f, err := os.Open(path)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	var magic [4]byte
+	n, err := io.ReadFull(f, magic[:])
+	return err == nil && n == 4 && magic[0] == 'P' && magic[1] == 'K' && (magic[2] == 3 || magic[2] == 5 || magic[2] == 7) && (magic[3] == 4 || magic[3] == 6 || magic[3] == 8)
 }
 
 func (m *toolManager) overrideDownloader() *toolDownloader {

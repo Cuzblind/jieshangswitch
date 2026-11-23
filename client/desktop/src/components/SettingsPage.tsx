@@ -51,6 +51,7 @@ export function SettingsPage({
   checkedAt,
   installing,
   disabled,
+  report,
   reportCopied = false,
   onClientUpdate,
   onToolUpdates,
@@ -66,6 +67,7 @@ export function SettingsPage({
   checkedAt?: string;
   installing: boolean;
   disabled: boolean;
+  report?: string;
   reportCopied?: boolean;
   onClientUpdate: () => void;
   onToolUpdates: () => void;
@@ -177,7 +179,7 @@ export function SettingsPage({
             </h2>
             <SettingRow
               title="复制脱敏诊断信息"
-              note="仅包含系统版本、助手状态、当前线路与安装日志，自动隐藏账号密码和密钥，可直接发给客服快速排障。"
+              note="仅包含系统版本、助手状态、当前线路与安装日志，自动隐藏账号、团队名和密钥，可直接发给客服快速排障。"
             >
               <Button
                 variant="tertiary"
@@ -189,6 +191,16 @@ export function SettingsPage({
                 {reportCopied ? "已复制诊断信息" : "复制诊断信息"}
               </Button>
             </SettingRow>
+            {report && (
+              <details className="mt-2 rounded-lg bg-surface-2 px-3 py-2 ring-1 ring-border/70">
+                <summary className={cn(typeClass("caption"), "cursor-pointer text-muted-foreground hover:text-foreground")}>
+                  预览即将复制的内容
+                </summary>
+                <pre className={cn(typeClass("micro"), "mt-2 mb-0 max-h-40 overflow-auto whitespace-pre-wrap break-all font-mono text-muted-foreground")}>
+                  {report}
+                </pre>
+              </details>
+            )}
           </Card>
         </Elevated>
       )}

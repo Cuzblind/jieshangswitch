@@ -116,8 +116,11 @@ func DesktopEnv() (Env, error) {
 		if err == nil {
 			err = removePersistentToolPath()
 		}
-		if err == nil {
-			err = restoreDesktopGUI()
+		if err := restoreDesktopGUI(); err != nil {
+			return false, err
+		}
+		if err := restoreClaudeOnboarding(); err != nil {
+			return false, err
 		}
 		return used, err
 	}
@@ -250,7 +253,7 @@ func (a *App) desktopCheck(agent string) error {
 // operations are available; there is no generic process or filesystem API.
 func (a *App) DesktopAction(r DesktopRequest) error {
 	switch r.Action {
-	case "refresh", "home", "cancel-install", "check-updates", "restore", "restore-confirm", "support", "recharge", "open-web", "usage-load", "switch-account":
+	case "refresh", "home", "cancel-install", "check-updates", "restore", "restore-confirm", "support", "recharge", "open-pricing", "open-web", "usage-load", "switch-account", "pick-work-dir", "set-work-dir":
 	default:
 		if !validAgent(r.Agent) {
 			return errors.New("请选择 Claude Code 或 Codex")
@@ -280,10 +283,27 @@ func (a *App) DesktopAction(r DesktopRequest) error {
 		return a.startDesktopInstall(r.Agent, "update")
 	case "check-updates":
 		a.startUpdateCheck()
-	case "open-web", "switch-account":
+	case "open-web":
+		a.mu.Lock()
+		ws := a.workspace
+		a.mu.Unlock()
+		target := a.web() + "/account"
+		if ws != nil && ws.Kind == "team" {
+			target = a.web() + "/team"
+		}
+		if err := a.env.Open(target); err != nil {
+			return errors.New("没能打开浏览器，请访问 jieshangai.com")
+		}
+	case "switch-account":
 		agent := r.Agent
 		if !validAgent(agent) {
-			agent = "claude"
+			_, claudeOK := a.env.Configured("claude", a.origin)
+			_, codexOK := a.env.Configured("codex", a.origin)
+			if codexOK && !claudeOK {
+				agent = "codex"
+			} else {
+				agent = "claude"
+			}
 		}
 		if err := a.env.Open(a.web() + "/download?agent=" + agent + "&continue=1"); err != nil {
 			return errors.New("没能打开浏览器，请访问 jieshangai.com")
@@ -315,7 +335,14 @@ func (a *App) DesktopAction(r DesktopRequest) error {
 		a.catalogs[r.Agent] = cat
 		a.mu.Unlock()
 	case "recharge":
-		if err := a.env.Open(a.web() + "/account"); err != nil {
+		a.mu.Lock()
+		ws := a.workspace
+		a.mu.Unlock()
+		target := a.web() + "/account"
+		if ws != nil && ws.Kind == "team" {
+			target = a.web() + "/team"
+		}
+		if err := a.env.Open(target); err != nil {
 			return errors.New("没能打开浏览器，请访问 jieshangai.com")
 		}
 	case "open-pricing":
@@ -603,6 +630,8 @@ func (a *App) DesktopAction(r DesktopRequest) error {
 		a.current = session{}
 		a.balance = nil
 		a.walletAgent = ""
+		a.walletKey = ""
+		a.walletEpoch++
 		a.accountLabel = ""
 		a.workspace = nil
 		a.today = nil

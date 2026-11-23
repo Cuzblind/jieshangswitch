@@ -150,6 +150,8 @@ function DesktopShell() {
   const navRef = useRef<HTMLElement>(null);
   const navHover = useFluidHover(navRef, { axis: "y" });
   const lastFocusRefreshRef = useRef(0);
+  const lastUsageWalletRef = useRef("");
+  const lastCatalogKeyRef = useRef("");
 
   const [state, setState] = useState<DesktopState>();
   const [page, setPage] = useState<Page>("home");
@@ -327,14 +329,16 @@ function DesktopShell() {
     }
   }, [checkedClean]);
 
-  async function loadUsage(nextRange: UsageRange) {
+  async function loadUsage(nextRange: UsageRange, walletKey?: string) {
     const previousRange = state?.usage?.range ?? usageRange;
+    if (walletKey !== undefined) lastUsageWalletRef.current = walletKey;
     setUsageRange(nextRange);
     setUsageLoading(true);
     setError("");
     try {
       const next = await desktopUsage(nextRange);
       applyState(next);
+      lastUsageWalletRef.current = `${next.workspace?.kind ?? ""}|${next.workspace?.label ?? ""}|${next.accountLabel ?? ""}`;
       if (next.usage?.range) setUsageRange(next.usage.range);
     } catch (err) {
       setUsageRange(previousRange);
@@ -343,14 +347,17 @@ function DesktopShell() {
       setUsageLoading(false);
     }
   }
-  async function loadPanel(next: Page, agent: Agent) {
+  async function loadPanel(next: Page, agent: Agent, walletKey?: string) {
     setPanelAgent(agent);
     setError("");
     try {
       if (next === "models") {
+        if (walletKey !== undefined) lastCatalogKeyRef.current = `${walletKey}|${agent}`;
         setCatalogLoading(true);
         try {
-          applyState(await desktopCatalog(agent));
+          const updated = await desktopCatalog(agent);
+          applyState(updated);
+          lastCatalogKeyRef.current = `${updated.workspace?.kind ?? ""}|${updated.workspace?.label ?? ""}|${updated.accountLabel ?? ""}|${agent}`;
         } finally {
           setCatalogLoading(false);
         }
@@ -535,15 +542,34 @@ function DesktopShell() {
   const current = pages.find((p) => p.page === page)!;
   const test = state?.version?.includes("-test");
   const anyConnected = !!state?.statuses?.some((s) => s.state === "ok");
+  const claudeConnected = !!state?.statuses?.some((s) => s.agent === "claude" && s.state === "ok");
+  const codexConnected = !!state?.statuses?.some((s) => s.agent === "codex" && s.state === "ok");
+  const preferredSwitchAgent: Agent | undefined = codexConnected && !claudeConnected ? "codex" : undefined;
   const panelAgentConnected = !!state?.statuses?.some((s) => s.agent === panelAgent && s.state === "ok");
   const workspaceLabel = state?.workspace?.label || "个人工作区";
+  const walletIdentity = `${state?.workspace?.kind ?? ""}|${state?.workspace?.label ?? ""}|${state?.accountLabel ?? ""}`;
   const isTeamWorkspace = state?.workspace?.kind === "team";
   const WorkspaceIcon = isTeamWorkspace ? Building2 : User;
+
+  // When a deep-link or account switch changes the active wallet while the user is on Usage or Models,
+  // automatically reload that page's server data so stale wallet numbers never linger.
+  useEffect(() => {
+    if (page !== "usage" || !anyConnected || usageLoading || busy || unavailable) return;
+    if (lastUsageWalletRef.current === walletIdentity && state?.usage) return;
+    void loadUsage(usageRange, walletIdentity);
+  }, [page, anyConnected, walletIdentity, state?.usage, usageRange, usageLoading, busy, unavailable]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    if (page !== "models" || !panelAgentConnected || catalogLoading || busy || unavailable) return;
+    const key = `${walletIdentity}|${panelAgent}`;
+    if (lastCatalogKeyRef.current === key && state?.catalogs?.[panelAgent]) return;
+    void loadPanel("models", panelAgent, walletIdentity);
+  }, [page, panelAgent, panelAgentConnected, walletIdentity, catalogLoading, busy, unavailable]); // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
     <div className="flex h-full min-h-0 w-full overflow-hidden bg-surface-1 text-foreground">
       {/* Sidebar */}
-      <aside className="flex w-56 shrink-0 flex-col border-r border-border bg-surface-2 px-3 py-4">
+      <aside className="flex min-h-0 w-56 shrink-0 flex-col overflow-hidden border-r border-border bg-surface-2 px-3 py-3">
         <div className="mb-3 flex items-center gap-2.5 px-2">
           <img src="/brand.svg" alt="" className="size-6 rounded-md" />
           <span className={cn(typeClass("subtitle"), "text-foreground")} style={{ fontVariationSettings: fontWeights.semibold }}>
@@ -595,7 +621,7 @@ function DesktopShell() {
                 index={0}
                 icon={ArrowLeftRight}
                 label="切换工作区 / 账号"
-                onSelect={() => void act("switch-account")}
+                onSelect={() => void act("switch-account", preferredSwitchAgent)}
               />
               <MenuItem
                 index={1}
@@ -620,7 +646,7 @@ function DesktopShell() {
           </DropdownMenu>
         </div>
 
-        <nav ref={navRef} aria-label="主导航" className="relative flex flex-1 flex-col gap-0.5" {...navHover.handlers}>
+        <nav ref={navRef} aria-label="主导航" className="relative flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto" {...navHover.handlers}>
           <FluidHoverHighlight hover={navHover} className={cn(shape.bg, "z-0")} />
           {pages.map(({ page: value, icon: Icon }, index) => {
             const active = page === value;
@@ -652,7 +678,7 @@ function DesktopShell() {
           })}
         </nav>
 
-        <div className="mt-4 flex flex-col gap-2">
+        <div className="mt-2 flex shrink-0 flex-col gap-1.5">
           <Elevated offset={2} shadowLevel={1} className="rounded-xl">
             <Card aria-label="账户余额" role="region" className="flex flex-col gap-2 rounded-xl p-3">
               <div className="flex items-center justify-between gap-2">
@@ -813,18 +839,6 @@ function DesktopShell() {
                 <BannerTitle>正在检测本机助手……</BannerTitle>
               </Banner>
             )}
-            {notice && (
-              <Banner
-                status="success"
-                contrast="low"
-                size="compact"
-                dismissible
-                dismissLabel="关闭提示"
-                onDismiss={() => setGoneNotice(noticeKey)}
-              >
-                <BannerTitle>{notice}</BannerTitle>
-              </Banner>
-            )}
           </div>
 
           {page === "home" && (() => {
@@ -901,7 +915,21 @@ function DesktopShell() {
                 {anyConnected && state?.workDir && (() => {
                   const fullDir = state.workDir;
                   const shortDir = fullDir.split(/[\\/]/).filter(Boolean).pop() || fullDir;
+                  const isDefaultWorkDir = /[\\/](接上AI工作区|jieshangai-workspace)[\\/]?$/.test(fullDir);
                   const recents = (state.recentDirs ?? []).filter((d) => d && d !== fullDir);
+                  const basenameCounts = new Map<string, number>();
+                  for (const dir of [fullDir, ...recents]) {
+                    const base = dir.split(/[\\/]/).filter(Boolean).pop() || dir;
+                    basenameCounts.set(base, (basenameCounts.get(base) ?? 0) + 1);
+                  }
+                  const recentLabel = (dir: string) => {
+                    const parts = dir.split(/[\\/]/).filter(Boolean);
+                    const base = parts[parts.length - 1] || dir;
+                    if ((basenameCounts.get(base) ?? 0) > 1 && parts.length >= 2) {
+                      return `${parts[parts.length - 2]}/${base}`;
+                    }
+                    return base;
+                  };
                   return (
                     <Elevated offset={2} shadowLevel={1} className="rounded-xl">
                       <Card
@@ -950,7 +978,7 @@ function DesktopShell() {
                                       key={dir}
                                       index={index}
                                       icon={FolderOpen}
-                                      label={dir.split(/[\\/]/).filter(Boolean).pop() || dir}
+                                      label={recentLabel(dir)}
                                       onSelect={() => void selectWorkDir(dir)}
                                     />
                                   ))}
@@ -963,6 +991,17 @@ function DesktopShell() {
                                   />
                                 </DropdownContent>
                               </DropdownMenu>
+                            )}
+                            {!isDefaultWorkDir && (
+                              <Button
+                                variant="ghost"
+                                size="compact"
+                                leadingIcon={RotateCcw}
+                                disabled={busy || unavailable}
+                                onClick={() => void selectWorkDir("")}
+                              >
+                                恢复默认
+                              </Button>
                             )}
                             <Button
                               variant="tertiary"
@@ -1055,6 +1094,7 @@ function DesktopShell() {
               checkedAt={state?.toolUpdates?.checkedAt}
               installing={installing}
               disabled={busy || unavailable}
+              report={state?.report}
               reportCopied={copied === "诊断信息"}
               onClientUpdate={() => void checkClientUpdate()}
               onToolUpdates={() => void act("check-updates")}
@@ -1065,6 +1105,20 @@ function DesktopShell() {
         </div>
       </main>
 
+      {notice && (
+        <div className="fixed right-5 bottom-5 z-40 w-[min(26rem,calc(100vw-2.5rem))] shadow-lg">
+          <Banner
+            status="success"
+            contrast="low"
+            size="compact"
+            dismissible
+            dismissLabel="关闭提示"
+            onDismiss={() => setGoneNotice(noticeKey)}
+          >
+            <BannerTitle>{notice}</BannerTitle>
+          </Banner>
+        </div>
+      )}
       <OperationDialog
         open={modal}
         view={view}

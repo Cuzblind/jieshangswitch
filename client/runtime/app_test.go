@@ -11,6 +11,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -442,10 +443,10 @@ func TestSharedCopyInSync(t *testing.T) {
 func TestStoppedStatus(t *testing.T) {
 	g := &fakeGW{models: 200}
 	mux := http.NewServeMux()
-	stopped := false
+	var stopped atomic.Bool
 	mux.Handle("/", g.handler())
 	mux.HandleFunc("/api/install/balance", func(w http.ResponseWriter, r *http.Request) {
-		if stopped {
+		if stopped.Load() {
 			w.WriteHeader(401)
 			_, _ = w.Write([]byte(`{"success":false,"stopped":true}`))
 			return
@@ -457,7 +458,7 @@ func TestStoppedStatus(t *testing.T) {
 	a, _ := testApp(t, gw)
 	a.HandleURL("jieshangai://install?ticket=goodticket123&agent=claude")
 	waitIdle(t, a)
-	stopped = true
+	stopped.Store(true)
 	a.act("refresh-balance", "")
 	time.Sleep(300 * time.Millisecond)
 	s := a.snapshot().Statuses[0]

@@ -485,4 +485,114 @@ describe("desktop assistant flow", () => {
     await userEvent.click(await screen.findByRole("button", { name: "复制诊断信息" }));
     expect(api.action).toHaveBeenCalledWith("copy-report");
   });
+
+  it("keeps CLI launch usable while GUI is downloading in the background", async () => {
+    api.state.mockResolvedValue({
+      ...fixture(),
+      tools: [
+        { agent: "claude", cliInstalled: true, guiInstalled: false, guiAvailable: true, inspected: true, guiInspected: true },
+      ],
+      installTasks: [{ agent: "claude", busy: true, line: "桌面版 · 正在下载：120.0 / 402.0 MB（30%）" }],
+    });
+    render(<App />);
+    const claude = await screen.findByRole("article", { name: "Claude Code" });
+    const launchBtn = within(claude).getByRole("button", { name: "打开命令行 · Claude Code" });
+    expect(launchBtn).toBeEnabled();
+    await userEvent.click(launchBtn);
+    expect(api.action).toHaveBeenCalledWith("launch", "claude", false);
+  });
+
+  it("auto-reloads usage when the active wallet switches while on the Usage page and keeps heatmap to one tab stop", async () => {
+    let publish!: (state: DesktopState) => void;
+    api.subscribe.mockImplementation(async (callback) => {
+      publish = callback;
+      return api.unlisten;
+    });
+    const personalState: DesktopState = {
+      ...fixture(),
+      revision: 1,
+      workspace: { kind: "personal", label: "个人工作区" },
+      accountLabel: "alice@example.com",
+    };
+    const personalUsageState: DesktopState = {
+      ...personalState,
+      revision: 2,
+      usage: {
+        range: "24h",
+        costCny: "1.20",
+        requests: 2,
+        tokens: 500,
+        promptTokens: 300,
+        completionTokens: 200,
+        heatmap: [
+          { date: "2026-11-22", requests: 1, tokens: 200, costCny: "0.40" },
+          { date: "2026-11-23", requests: 1, tokens: 300, costCny: "0.80" },
+        ],
+        logs: [],
+      },
+    };
+    const teamUsageState: DesktopState = {
+      ...fixture(),
+      revision: 4,
+      workspace: { kind: "team", label: "研发团队", teamId: 7 },
+      accountLabel: "alice@example.com",
+      usage: {
+        range: "24h",
+        costCny: "9.50",
+        requests: 5,
+        tokens: 1200,
+        promptTokens: 800,
+        completionTokens: 400,
+        heatmap: [
+          { date: "2026-11-22", requests: 2, tokens: 400, costCny: "3.00" },
+          { date: "2026-11-23", requests: 3, tokens: 800, costCny: "6.50" },
+        ],
+        logs: [],
+      },
+    };
+    api.state.mockResolvedValue(personalState);
+    api.usage.mockResolvedValueOnce(personalUsageState).mockResolvedValueOnce(teamUsageState);
+
+    render(<App />);
+    await userEvent.click(await screen.findByRole("button", { name: "用量与日志" }));
+    expect(await screen.findByText("¥1.20")).toBeInTheDocument();
+
+    // Verify heatmap uses roving tabIndex: exactly 1 tabIndex=0 cell across the entire grid
+    const grid = screen.getByRole("grid", { name: "近 365 天活跃度日历，使用方向键浏览日期" });
+    const tabbableCells = grid.querySelectorAll("[tabindex='0']");
+    expect(tabbableCells.length).toBe(1);
+
+    // Simulate backend wallet switch pushing usage=undefined with new workspace
+    act(() => {
+      publish({
+        ...fixture(),
+        revision: 3,
+        workspace: { kind: "team", label: "研发团队", teamId: 7 },
+        accountLabel: "alice@example.com",
+        usage: undefined,
+      });
+    });
+
+    await waitFor(() => expect(api.usage).toHaveBeenCalledTimes(2));
+    expect(await screen.findByText("¥9.50")).toBeInTheDocument();
+  });
+
+  it("exposes 恢复默认 for custom workDir even when recentDirs is empty", async () => {
+    api.state.mockResolvedValue({
+      ...fixture(),
+      workDir: "/Users/alice/Projects/thesis",
+      recentDirs: [],
+    });
+    api.setWorkDir.mockResolvedValue({
+      ...fixture(),
+      workDir: "/Users/alice/Desktop/接上AI工作区",
+      recentDirs: [],
+      view: { screen: "home", notice: "已恢复默认工作区" },
+    });
+    render(<App />);
+    const workDirCard = await screen.findByRole("region", { name: "命令行工作目录" });
+    const resetBtn = within(workDirCard).getByRole("button", { name: "恢复默认" });
+    await userEvent.click(resetBtn);
+    expect(api.setWorkDir).toHaveBeenCalledWith("");
+  });
 });

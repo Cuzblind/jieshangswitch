@@ -342,31 +342,64 @@ export function UsagePage({
                     </span>
                   ))}
                 </div>
-                <div className="flex gap-[3px]">
-                  {weeks.map((week, wi) => (
-                    <div key={wi} className="flex flex-col gap-[3px]">
-                      {week.map((cell) => (
-                        <Tooltip
-                          key={cell.date}
-                          side="top"
-                          content={
-                            cell.requests > 0
-                              ? `${cell.date} · ${cell.requests} 次请求 · ${formatCompactTokens(cell.tokens)} tokens · ¥${cell.costCny}`
-                              : `${cell.date} · 暂无调用`
-                          }
-                        >
-                          <span
-                            tabIndex={0}
-                            aria-label={`${cell.date} ${cell.requests} 次请求`}
-                            className={cn(
-                              "block size-[10px] rounded-[2px] transition-opacity duration-80 hover:opacity-80 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
-                              HEATMAP_LEVEL_CLASS[cell.level],
-                            )}
-                          />
-                        </Tooltip>
-                      ))}
-                    </div>
-                  ))}
+                <div
+                  role="grid"
+                  aria-label="近 365 天活跃度日历，使用方向键浏览日期"
+                  className="flex gap-[3px]"
+                  onKeyDown={(e) => {
+                    const target = e.target as HTMLElement | null;
+                    const idxAttr = target?.getAttribute("data-heatmap-idx");
+                    if (idxAttr == null) return;
+                    const cur = Number(idxAttr);
+                    const total = weeks.reduce((sum, w) => sum + w.length, 0);
+                    let next = cur;
+                    if (e.key === "ArrowRight") next = Math.min(total - 1, cur + 7);
+                    else if (e.key === "ArrowLeft") next = Math.max(0, cur - 7);
+                    else if (e.key === "ArrowDown") next = Math.min(total - 1, cur + 1);
+                    else if (e.key === "ArrowUp") next = Math.max(0, cur - 1);
+                    else if (e.key === "Home") next = 0;
+                    else if (e.key === "End") next = total - 1;
+                    else return;
+                    e.preventDefault();
+                    const cellEl = e.currentTarget.querySelector<HTMLElement>(`[data-heatmap-idx="${next}"]`);
+                    if (cellEl) {
+                      target?.setAttribute("tabindex", "-1");
+                      cellEl.setAttribute("tabindex", "0");
+                      cellEl.focus();
+                    }
+                  }}
+                >
+                  {weeks.map((week, wi) => {
+                    const baseIdx = weeks.slice(0, wi).reduce((sum, w) => sum + w.length, 0);
+                    return (
+                      <div key={wi} className="flex flex-col gap-[3px]">
+                        {week.map((cell, di) => {
+                          const flatIdx = baseIdx + di;
+                          return (
+                            <Tooltip
+                              key={cell.date}
+                              side="top"
+                              content={
+                                cell.requests > 0
+                                  ? `${cell.date} · ${cell.requests} 次请求 · ${formatCompactTokens(cell.tokens)} tokens · ¥${cell.costCny}`
+                                  : `${cell.date} · 暂无调用`
+                              }
+                            >
+                              <span
+                                tabIndex={flatIdx === 0 ? 0 : -1}
+                                data-heatmap-idx={flatIdx}
+                                aria-label={`${cell.date} ${cell.requests} 次请求`}
+                                className={cn(
+                                  "block size-[10px] rounded-[2px] transition-opacity duration-80 hover:opacity-80 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
+                                  HEATMAP_LEVEL_CLASS[cell.level],
+                                )}
+                              />
+                            </Tooltip>
+                          );
+                        })}
+                      </div>
+                    );
+                  })}
                 </div>
               </div>
             </TooltipProvider>

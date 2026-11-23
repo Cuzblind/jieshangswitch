@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawn } from "node:child_process";
 import { createServer } from "node:http";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, delimiter, join, resolve } from "node:path";
 import { createInterface } from "node:readline";
@@ -378,7 +378,8 @@ async function main() {
 
     assert.equal(readFileSync(claudeSettingsPath, "utf8"), origClaude, "Claude settings must restore byte-identically");
     assert.equal(readFileSync(codexConfigPath, "utf8"), origCodex, "Codex config must restore byte-identically");
-    console.log("[smoke] PASS 5/5: Full restore cleanly reverted both assistants to original user configs");
+    assert.equal(existsSync(join(sandbox, ".claude.json")), false, "Claude onboarding file created by connect must be removed on restore");
+    console.log("[smoke] PASS 5/5: Full restore cleanly reverted both assistants and onboarding state");
   } finally {
     child.stdin.end();
     await Promise.race([

@@ -1,3 +1,4 @@
+import { useEffect, useRef } from "react";
 import { CheckCircle2 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -39,6 +40,23 @@ export function OperationDialog({
   const support = view?.screen === "support";
   const done = view?.screen === "success" || view?.screen === "done";
   const title = support ? "联系客服" : confirm ? "请确认" : done ? "准备好了" : "还差一步";
+  const returnFocusRef = useRef<HTMLElement | null>(null);
+  const wasOpenRef = useRef(false);
+
+  useEffect(() => {
+    if (open && !wasOpenRef.current) {
+      const active = document.activeElement;
+      returnFocusRef.current = active instanceof HTMLElement ? active : null;
+    }
+    if (!open && wasOpenRef.current) {
+      const target = returnFocusRef.current;
+      returnFocusRef.current = null;
+      if (target && target.isConnected) {
+        window.requestAnimationFrame(() => target.focus());
+      }
+    }
+    wasOpenRef.current = open;
+  }, [open]);
 
   return (
     <Dialog

@@ -240,7 +240,8 @@ export function AssistantCard({
           : state?.authorized
             ? "connect"
             : "open-web";
-  const label = task?.busy
+  const cliUsableWhileGuiInstalls = ready && !!tool?.cliInstalled && !!task?.busy;
+  const label = task?.busy && !cliUsableWhileGuiInstalls
     ? "正在安装…"
     : checking
       ? "正在检测"
@@ -334,7 +335,7 @@ export function AssistantCard({
               />
             </ul>
 
-            {failure && (
+            {failure && (!task?.error || task.error !== failure.message) && (
               <Banner status="error" contrast="low" size="compact">
                 <BannerTitle>{failure.message}</BannerTitle>
                 <BannerDescription>错误码：{failure.nativeCode || failure.code}</BannerDescription>
@@ -352,7 +353,10 @@ export function AssistantCard({
                   task.error ? "bg-destructive-light text-destructive" : "bg-surface-2 text-muted-foreground",
                 )}
               >
-                <span className="min-w-0 flex-1">{task.error || task.line}</span>
+                <span className="min-w-0 flex-1">
+                  {task.error || task.line}
+                  {task.error && failure && (failure.nativeCode || failure.code) ? `（错误码：${failure.nativeCode || failure.code}）` : ""}
+                </span>
                 <div className="flex items-center gap-1">
                   {task.busy && (
                     <Button variant="ghost" size="compact" disabled={cancelling} onClick={() => cancelInstall(agent)}>
@@ -360,7 +364,7 @@ export function AssistantCard({
                     </Button>
                   )}
                   {!task.busy && (task.error || task.cancelled) && (
-                    <Button variant="ghost" size="compact" disabled={off} onClick={() => act("install-suite", agent)}>
+                    <Button variant="primary" size="compact" disabled={off} onClick={() => act("install-suite", agent)}>
                       重试安装
                     </Button>
                   )}
@@ -399,7 +403,7 @@ export function AssistantCard({
                   <span className="sr-only"> · {name}</span>
                 </Button>
               )}
-              {desktopInstallPrimary && (
+              {desktopInstallPrimary && !task?.error && (
                 <Button
                   className="primary flex-1"
                   variant="primary"
@@ -414,9 +418,9 @@ export function AssistantCard({
               <Button
                 className={cn("flex-1", isPrimaryCta && "primary")}
                 variant={isPrimaryCta ? "primary" : "tertiary"}
-                loading={!!task?.busy}
-                leadingIcon={task?.busy ? undefined : primaryLeadingIcon}
-                disabled={off || checking || !!task?.busy || !s || disabled || s.state === "checking"}
+                loading={!!task?.busy && !cliUsableWhileGuiInstalls}
+                leadingIcon={task?.busy && !cliUsableWhileGuiInstalls ? undefined : primaryLeadingIcon}
+                disabled={off || checking || (!!task?.busy && !cliUsableWhileGuiInstalls) || !s || disabled || s.state === "checking"}
                 onClick={() => act(action, agent)}
               >
                 {label}
@@ -430,7 +434,7 @@ export function AssistantCard({
                   variant="ghost"
                   size="compact"
                   leadingIcon={Activity}
-                  disabled={off || !!task?.busy || disabled}
+                  disabled={off || (!!task?.busy && !cliUsableWhileGuiInstalls) || disabled}
                   onClick={() => act("check", agent)}
                 >
                   检查连接<span className="sr-only"> · {name}</span>
@@ -440,7 +444,7 @@ export function AssistantCard({
                     variant="ghost"
                     size="compact"
                     leadingIcon={MessageSquare}
-                    disabled={off || !!task?.busy || disabled}
+                    disabled={off || (!!task?.busy && !cliUsableWhileGuiInstalls) || disabled}
                     onClick={() => act("test-chat", agent)}
                   >
                     测试对话<span className="sr-only"> · {name}</span>

@@ -134,6 +134,8 @@ type App struct {
 	statuses         []AgentStatus
 	balance          *Balance
 	walletAgent      string
+	walletKey        string
+	walletEpoch      uint64
 	accountLabel     string
 	workspace        *WorkspaceInfo
 	today            *TodayUsageSummary

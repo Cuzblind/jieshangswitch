@@ -91,7 +91,7 @@ func (m *toolManager) installGUIPlatform(ctx context.Context, agent string, upda
 	}
 	defer os.RemoveAll(stage)
 	source := stage
-	if r.Format == "zip" {
+	if r.Format == "zip" || isZIPFile(file) {
 		progress("正在解包官方桌面版……")
 		if e = validateGUIZIP(file, stage); e != nil {
 			return e

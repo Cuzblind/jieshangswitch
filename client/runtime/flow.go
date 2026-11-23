@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -318,12 +319,25 @@ func (a *App) syncDesktopCatalog(agent, secret string) {
 	}
 }
 
+type onboardingBackup struct {
+	FileExisted bool `json:"fileExisted"`
+	HadKey      bool `json:"hadKey"`
+	OldValue    any  `json:"oldValue,omitempty"`
+}
+
+func claudeOnboardingBackupPath() string {
+	return filepath.Join(paths().Dir(), "claude-onboarding-backup.json")
+}
+
 // ensureClaudeOnboarding surgically sets hasCompletedOnboarding=true in ~/.claude.json
-// while preserving mcpServers and all existing user fields. Corrupt JSON is never overwritten.
+// while preserving mcpServers and all existing user fields. Records original state
+// once so global restore can cleanly revert our change without losing user edits.
 func ensureClaudeOnboarding() error {
 	path := claudeJSONPath()
 	doc := map[string]any{}
+	fileExisted := false
 	if raw, err := os.ReadFile(path); err == nil {
+		fileExisted = true
 		if len(bytes.TrimSpace(raw)) > 0 {
 			if err := json.Unmarshal(raw, &doc); err != nil || doc == nil {
 				return err
@@ -335,12 +349,79 @@ func ensureClaudeOnboarding() error {
 	if done, ok := doc["hasCompletedOnboarding"].(bool); ok && done {
 		return nil
 	}
+	bpath := claudeOnboardingBackupPath()
+	if _, err := os.Stat(bpath); os.IsNotExist(err) {
+		oldVal, hadKey := doc["hasCompletedOnboarding"]
+		bak := onboardingBackup{
+			FileExisted: fileExisted,
+			HadKey:      hadKey,
+			OldValue:    oldVal,
+		}
+		if err := os.MkdirAll(filepath.Dir(bpath), 0o700); err == nil {
+			if b, err := json.Marshal(bak); err == nil {
+				_ = writePrivateFile(bpath, b)
+			}
+		}
+	}
 	doc["hasCompletedOnboarding"] = true
 	out, err := json.MarshalIndent(doc, "", "  ")
 	if err != nil {
 		return err
 	}
 	return writePrivateFile(path, append(out, '\n'))
+}
+
+// restoreClaudeOnboarding reverts only our hasCompletedOnboarding edit when
+// a backup exists, preserving any user-added keys such as mcpServers.
+func restoreClaudeOnboarding() error {
+	bpath := claudeOnboardingBackupPath()
+	rawBak, err := os.ReadFile(bpath)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	var bak onboardingBackup
+	if err := json.Unmarshal(rawBak, &bak); err != nil {
+		_ = os.Remove(bpath)
+		return nil
+	}
+	path := claudeJSONPath()
+	raw, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		_ = os.Remove(bpath)
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	var doc map[string]any
+	if len(bytes.TrimSpace(raw)) == 0 || json.Unmarshal(raw, &doc) != nil || doc == nil {
+		_ = os.Remove(bpath)
+		return nil
+	}
+	// Only revert if the value is still the `true` we wrote.
+	if cur, ok := doc["hasCompletedOnboarding"].(bool); ok && cur {
+		if bak.HadKey {
+			doc["hasCompletedOnboarding"] = bak.OldValue
+		} else {
+			delete(doc, "hasCompletedOnboarding")
+		}
+		if !bak.FileExisted && len(doc) == 0 {
+			_ = os.Remove(path)
+		} else {
+			out, err := json.MarshalIndent(doc, "", "  ")
+			if err != nil {
+				return err
+			}
+			if err := writePrivateFile(path, append(out, '\n')); err != nil {
+				return err
+			}
+		}
+	}
+	_ = os.Remove(bpath)
+	return nil
 }
 
 var reCodexConfiguredModel = regexp.MustCompile(`(?m)^\s*model\s*=\s*"([^"]+)"`)
@@ -612,17 +693,37 @@ func normalizeUsageRange(raw string) string {
 	}
 }
 
+func walletIdentityKey(agent string, meta *balanceMeta) string {
+	if agent == "" && meta == nil {
+		return ""
+	}
+	kind := ""
+	teamID := 0
+	acct := ""
+	if meta != nil {
+		acct = meta.accountLabel
+		if meta.workspace != nil {
+			kind = meta.workspace.Kind
+			teamID = meta.workspace.TeamID
+		}
+	}
+	return fmt.Sprintf("%s|%s|%d|%s", agent, kind, teamID, acct)
+}
+
 // fetchUsage loads the desktop Usage & Logs dashboard snapshot from /api/install/usage.
 // Always uses the same connected wallet that owns balance, workspace, and today summary.
 func (a *App) fetchUsage(rangeKey string) (*UsageSnapshot, error) {
 	rangeKey = normalizeUsageRange(rangeKey)
 	a.mu.Lock()
 	walletAgent := a.walletAgent
+	startEpoch := a.walletEpoch
 	a.mu.Unlock()
 	secret := a.connectedSecret(walletAgent)
 	if secret == "" {
 		a.mu.Lock()
-		a.usage = nil
+		if a.walletEpoch == startEpoch {
+			a.usage = nil
+		}
 		a.mu.Unlock()
 		return nil, nil
 	}
@@ -704,6 +805,10 @@ func (a *App) fetchUsage(rangeKey string) (*UsageSnapshot, error) {
 		Logs:             logs,
 	}
 	a.mu.Lock()
+	if a.walletEpoch != startEpoch || a.walletAgent != walletAgent {
+		a.mu.Unlock()
+		return nil, nil
+	}
 	a.usage = snap
 	a.mu.Unlock()
 	return snap, nil
@@ -1307,9 +1412,14 @@ func (a *App) refreshStatus(withBalance bool) {
 	}
 	a.mu.Lock()
 	a.statuses = out
+	prevAgent := a.walletAgent
+	prevKey := a.walletKey
 	a.walletAgent = walletAgent
 	if withBalance {
+		nextKey := walletIdentityKey(walletAgent, meta)
+		walletChanged := prevAgent != walletAgent || (prevKey != "" && prevKey != nextKey) || (walletAgent == "" && meta == nil)
 		a.balance = bal
+		a.walletKey = nextKey
 		if meta != nil {
 			a.accountLabel = meta.accountLabel
 			a.workspace = meta.workspace
@@ -1319,6 +1429,17 @@ func (a *App) refreshStatus(withBalance bool) {
 			a.workspace = nil
 			a.today = nil
 		}
+		if walletChanged {
+			a.walletEpoch++
+			a.usage = nil
+			if walletAgent == "" {
+				a.catalogs = nil
+			}
+		}
+	} else if prevAgent != walletAgent {
+		a.walletEpoch++
+		a.usage = nil
+		a.today = nil
 	}
 	a.mu.Unlock()
 	// The desktop card already says "需要重新接上"; only the legacy client opens a dialog.
@@ -1345,8 +1466,12 @@ func (a *App) diagLocked() []string {
 		}
 		d = append(d, line)
 	}
-	if a.workspace != nil && a.workspace.Label != "" {
-		d = append(d, "工作区："+a.workspace.Label)
+	if a.workspace != nil {
+		wsType := "个人工作区"
+		if a.workspace.Kind == "team" {
+			wsType = "团队工作区"
+		}
+		d = append(d, "工作区类型："+wsType)
 	}
 	return d
 }
