@@ -49,7 +49,7 @@ const fixture = (): DesktopState => ({
 });
 
 beforeEach(() => {
-  vi.clearAllMocks();
+  vi.resetAllMocks();
   api.state.mockResolvedValue(fixture());
   api.subscribe.mockResolvedValue(api.unlisten);
   api.action.mockResolvedValue(fixture());
@@ -60,17 +60,13 @@ beforeEach(() => {
   api.usage.mockResolvedValue(fixture());
   api.catalog.mockResolvedValue(fixture());
   localStorage.clear();
+  // Automatic checks have dedicated HomeStability coverage. Their generic
+  // fixture response must not replace Usage mid-interaction on slower runners.
+  localStorage.setItem("jieshangai:tool-update-check", String(Date.now()));
+  localStorage.setItem("jieshangai:client-update-check", String(Date.now()));
 });
 
 describe("desktop assistant flow", () => {
-  it("keeps a successful CLI usable when the GUI still needs installation", async () => {
-    api.state.mockResolvedValue({...fixture(),tools:[{agent:"claude",cliInstalled:true,guiInstalled:false,guiAvailable:true}]});
-    render(<App />);
-    const launchButton=await screen.findByRole("button", {name:"打开命令行 · Claude Code"});
-    expect(screen.getByRole("button", {name:"安装桌面版 · Claude Code"})).toBeEnabled();
-    await userEvent.click(launchButton);
-    expect(api.action).toHaveBeenCalledWith("launch","claude",false);
-  });
   it("cancels a client update and closes its dialog while downloading", async () => {
     api.appCheck.mockResolvedValue({ available: true, version: "0.2.1" });
     api.appInstall.mockReturnValue(new Promise(() => {}));
@@ -118,6 +114,24 @@ describe("desktop assistant flow", () => {
     expect(api.action).toHaveBeenCalledWith("cancel-install", "codex");
   });
 
+  it("keeps a foreground action pending when an earlier background request finishes", async () => {
+    let checked!: (state: DesktopState) => void;
+    let launched!: (state: DesktopState) => void;
+    api.action.mockImplementation((action) => new Promise<DesktopState>((resolve) => {
+      if (action === "check-updates") checked = resolve;
+      if (action === "launch") launched = resolve;
+    }));
+    render(<App />);
+    await userEvent.click(await screen.findByRole("button", { name: "检查更新" }));
+    const launch = screen.getByRole("button", { name: "打开命令行 · Claude Code" });
+    await userEvent.click(launch);
+    expect(launch).toBeDisabled();
+    await act(async () => { checked(fixture()); });
+    expect(launch).toBeDisabled();
+    await act(async () => { launched(fixture()); });
+    expect(launch).toBeEnabled();
+  });
+
   it("closes an error immediately even if returning home is delayed", async () => {
     api.state.mockResolvedValue({
       ...fixture(),
@@ -141,25 +155,6 @@ describe("desktop assistant flow", () => {
       "codex",
       false,
     );
-  });
-
-  it("opens the official GUI and keeps a terminal entry", async () => {
-    api.state.mockResolvedValue({
-      ...fixture(),
-      tools: [
-        {
-          agent: "claude",
-          cliInstalled: true,
-          guiInstalled: true,
-          guiAvailable: true,
-        },
-      ],
-    });
-    render(<App />);
-    await userEvent.click(
-      await screen.findByRole("button", { name: "打开桌面版 · Claude Code" }),
-    );
-    expect(api.action).toHaveBeenCalledWith("launch-gui", "claude", false);
   });
 
   it("checks client updates before requiring an explicit install click", async () => {
@@ -413,6 +408,7 @@ describe("desktop assistant flow", () => {
     await userEvent.click(within(strip).getByRole("button", { name: "查看全部日志" }));
 
     expect(api.usage).toHaveBeenCalledWith("24h");
+    expect(api.usage).toHaveBeenCalledTimes(1);
     expect(await screen.findByText("claude-sonnet-4-5")).toBeInTheDocument();
 
     const rangeGroup = screen.getByRole("group", { name: "统计时间范围" });
@@ -426,6 +422,48 @@ describe("desktop assistant flow", () => {
     expect(await screen.findByRole("alert")).toHaveTextContent("读取 90 天用量失败");
     expect(within(rangeGroup).getByRole("button", { name: "7天" })).toHaveAttribute("aria-pressed", "true");
     expect(within(rangeGroup).getByRole("button", { name: "90天" })).toHaveAttribute("aria-pressed", "false");
+    expect(api.usage.mock.calls.map(([range]) => range)).toEqual(["24h", "7d", "90d"]);
+  });
+
+  it.each([
+    ["用量与日志", "usage", "刷新数据"],
+    ["可用模型", "catalog", "刷新清单"],
+  ] as const)("keeps a failed first %s load stable until the user retries", async (page, method, retry) => {
+    // A second unexpected automatic request stays pending so a regression fails
+    // on its call count instead of spinning an unlimited rejected-promise loop.
+    api[method].mockRejectedValueOnce("首次读取失败").mockReturnValue(new Promise(() => {}));
+    render(<App />);
+    await userEvent.click(await screen.findByRole("button", { name: page }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("首次读取失败");
+    expect(api[method]).toHaveBeenCalledTimes(1);
+    api[method].mockResolvedValueOnce(fixture());
+    await userEvent.click(screen.getByRole("button", { name: retry }));
+    await waitFor(() => expect(screen.queryByRole("alert")).not.toBeInTheDocument());
+    expect(api[method]).toHaveBeenCalledTimes(2);
+  });
+
+  it.each(["usage", "catalog"] as const)("replaces an in-flight %s read when switching between identically named teams", async (method) => {
+    let publish!: (state: DesktopState) => void;
+    api.subscribe.mockImplementation(async (callback) => { publish = callback; return api.unlisten; });
+    const wallet = (teamId: number, walletEpoch: number): DesktopState => ({
+      ...fixture(), workspace: { kind: "team", label: "研发团队", teamId }, accountLabel: "alice@example.com", walletEpoch,
+    });
+    const loaded = (state: DesktopState, cost: string): DesktopState => method === "usage"
+      ? { ...state, usage: { range: "24h", costCny: cost, requests: 1, tokens: 2, promptTokens: 1, completionTokens: 1, heatmap: [], logs: [] } }
+      : { ...state, catalogs: { claude: { enabled: true, version: 1, agent: "claude_code", tier: "balanced", default_model: cost, models: [{ id: cost }] } } };
+    let finishOld!: (state: DesktopState) => void;
+    api.state.mockResolvedValue(wallet(7, 1));
+    api[method].mockReturnValueOnce(new Promise<DesktopState>((resolve) => { finishOld = resolve; }))
+      .mockResolvedValueOnce(loaded(wallet(8, 2), "9.50"));
+    render(<App />);
+    await userEvent.click(await screen.findByRole("button", { name: method === "usage" ? "用量与日志" : "可用模型" }));
+    expect(api[method]).toHaveBeenCalledTimes(1);
+    act(() => publish(wallet(8, 2)));
+    await waitFor(() => expect(api[method]).toHaveBeenCalledTimes(2));
+    expect(await screen.findAllByText(method === "usage" ? "¥9.50" : "9.50")).not.toHaveLength(0);
+    await act(async () => finishOld(loaded(wallet(7, 1), "1.20")));
+    expect(screen.queryByText(method === "usage" ? "¥1.20" : "1.20")).not.toBeInTheDocument();
+    expect(api[method]).toHaveBeenCalledTimes(2);
   });
 
   it("loads authorized 6-brand models on the Models page", async () => {
@@ -594,5 +632,31 @@ describe("desktop assistant flow", () => {
     const resetBtn = within(workDirCard).getByRole("button", { name: "恢复默认" });
     await userEvent.click(resetBtn);
     expect(api.setWorkDir).toHaveBeenCalledWith("");
+  });
+
+  it("shows prominent update banner, sidebar version badge, and dialog when an update is found", async () => {
+    api.appCheck.mockResolvedValue({
+      available: true,
+      version: "0.2.0-beta.12",
+      notes: "新增官方 Skill 广场一键安装",
+    });
+    render(<App />);
+    await userEvent.click(await screen.findByRole("button", { name: "检查更新" }));
+    const dialog = await screen.findByRole("dialog");
+    expect(within(dialog).getByText("更新至 0.2.0-beta.12")).toBeInTheDocument();
+    await userEvent.click(within(dialog).getByRole("button", { name: "关闭" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+
+    expect(screen.getByText("接上AI 有新版本 0.2.0-beta.12 可用")).toBeInTheDocument();
+    expect(screen.getByText("有更新")).toBeInTheDocument();
+
+    // Banner remains visible on other tabs until dismissed, and sidebar version opens dialog again.
+    await userEvent.click(screen.getByRole("button", { name: "设置" }));
+    expect(screen.getByText("接上AI 有新版本 0.2.0-beta.12 可用")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "暂不提醒此版本" }));
+    expect(screen.queryByText("接上AI 有新版本 0.2.0-beta.12 可用")).toBeNull();
+
+    await userEvent.click(screen.getByTitle("点击更新至 0.2.0-beta.12"));
+    expect(await screen.findByRole("dialog")).toBeInTheDocument();
   });
 });

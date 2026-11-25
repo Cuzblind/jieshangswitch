@@ -22,11 +22,12 @@ var TestOrigin string
 const ProductionOrigin = "https://jieshangai.com"
 
 type DesktopRequest struct {
-	ID      string `json:"id"`
-	Action  string `json:"action"`
-	Agent   string `json:"agent,omitempty"`
-	Ticket  string `json:"ticket,omitempty"`
-	Confirm bool   `json:"confirm,omitempty"`
+	read    desktopRead // private admission metadata; never accepted from JSON
+	ID      string      `json:"id"`
+	Action  string      `json:"action"`
+	Agent   string      `json:"agent,omitempty"`
+	Ticket  string      `json:"ticket,omitempty"`
+	Confirm bool        `json:"confirm,omitempty"`
 	// Prompt management fields. PromptID also carries the MCP ID.
 	PromptID string `json:"promptId,omitempty"`
 	Name     string `json:"name,omitempty"`
@@ -55,6 +56,7 @@ type DesktopState struct {
 	RecentDirs   []string                          `json:"recentDirs,omitempty"`
 	Today        *TodayUsageSummary                `json:"today,omitempty"`
 	Usage        *UsageSnapshot                    `json:"usage,omitempty"`
+	WalletEpoch  uint64                            `json:"walletEpoch"`
 	Catalogs     map[string]*DesktopCatalogPayload `json:"catalogs,omitempty"`
 	Version      string                            `json:"version"`
 	OS           string                            `json:"os"`
@@ -69,6 +71,7 @@ type DesktopState struct {
 	Prompts      map[string][]Prompt               `json:"prompts,omitempty"`
 	MCP          map[string][]MCPServer            `json:"mcp,omitempty"`
 	Skills       map[string][]Skill                `json:"skills,omitempty"`
+	SkillCatalog *RemoteSkillsCatalog              `json:"skillCatalog,omitempty"`
 }
 
 type desktopReply struct {
@@ -164,8 +167,6 @@ func (a *App) restoreAll() error {
 func NewDesktop(env Env, appVersion string) *App {
 	a := newApp(env)
 	a.desktop = true
-	a.desktopStates = make(map[string]AgentStatus)
-	a.seenTickets = make(map[string]bool)
 	a.appVersion = appVersion
 	return a
 }
@@ -189,6 +190,7 @@ func (a *App) DesktopState() DesktopState {
 		today = &cp
 	}
 	usage := a.usage
+	walletEpoch := a.walletEpoch
 	var catalogs map[string]*DesktopCatalogPayload
 	if len(a.catalogs) > 0 {
 		catalogs = make(map[string]*DesktopCatalogPayload, len(a.catalogs))
@@ -196,13 +198,14 @@ func (a *App) DesktopState() DesktopState {
 			catalogs[k] = v
 		}
 	}
+	skillCatalog := a.skillCatalog
 	a.mu.Unlock()
 	workDir, recentDirs := workDirSnapshot()
 	return DesktopState{
 		View: s.View, Statuses: s.Statuses, Balance: s.Balance,
-		AccountLabel: accountLabel, Workspace: workspace, WorkDir: workDir, RecentDirs: recentDirs, Today: today, Usage: usage, Catalogs: catalogs,
+		AccountLabel: accountLabel, Workspace: workspace, WorkDir: workDir, RecentDirs: recentDirs, Today: today, Usage: usage, WalletEpoch: walletEpoch, Catalogs: catalogs,
 		Version: s.Version, OS: s.OS, Authorized: s.Authorized, Support: s.Support,
-		QQ: supportQQ(), Email: supportEmail(), Report: a.supportReport(), Tools: tools, InstallTasks: a.installTaskSnapshot(), ToolUpdates: a.updateSnapshot(), Prompts: promptSnapshot(), MCP: mcpSnapshot(), Skills: skillSnapshot(),
+		QQ: supportQQ(), Email: supportEmail(), Report: a.supportReport(), Tools: tools, InstallTasks: a.installTaskSnapshot(), ToolUpdates: a.updateSnapshot(), Prompts: promptSnapshot(), MCP: mcpSnapshot(), Skills: skillSnapshot(), SkillCatalog: skillCatalog,
 	}
 }
 
@@ -211,60 +214,75 @@ func (a *App) desktopRefresh() {
 		a.env.InspectTools()
 	}
 	a.refreshStatus(true)
-	a.mu.Lock()
-	for i := range a.statuses {
-		live := a.statuses[i]
-		if live.State == "ok" && a.env.OfficialLogin(live.Agent) {
-			live.State, live.Badge = "conflict", "需要修复登录"
-			a.statuses[i] = live
-		}
-		if checked, ok := a.desktopStates[live.Agent]; ok && live.State == "ok" {
-			checked.Installed, checked.Configured, checked.Running = live.Installed, live.Configured, live.Running
-			checked.Tier, checked.Tiers = live.Tier, live.Tiers
-			a.statuses[i] = checked
-		}
-	}
-
-	a.mu.Unlock()
 }
 
-func (a *App) desktopCheck(agent string) error {
-	secret, ok := a.env.Configured(agent, a.origin)
-	if !ok {
-		return errExpired
-	}
-	err := a.check(secret)
-	st := AgentStatus{Agent: agent, Name: agentName(agent), State: "ok", Badge: "能用了", Installed: a.env.FindCLI(agent), Configured: ok, Running: a.env.Running(agent)}
-	if err != nil {
-		st.State, st.Badge = "offline", "暂时连不上"
-		if errors.Is(err, errExpired) {
-			st.State, st.Badge = "expired", "需要重新接上"
-		}
-	} else if a.env.OfficialLogin(agent) {
-		st.State, st.Badge = "conflict", "需要修复登录"
+// Cache only the remote check, bound to the credential it tested. Local facts,
+// login conflicts and card actions are always derived again during refresh.
+type desktopConnectionCheck struct {
+	secret string
+	err    error
+}
+
+func (a *App) applyDesktopCheck(st *AgentStatus, secret string) {
+	// Balance errors (disabled, stopped, expired, offline) remain authoritative.
+	if st.State != "ok" {
+		return
 	}
 	a.mu.Lock()
-	a.desktopStates[agent] = st
+	checked := a.desktopChecks[st.Agent]
 	a.mu.Unlock()
-	return err
+	switch {
+	case a.env.OfficialLogin(st.Agent):
+		st.State, st.Badge, st.Button, st.Action = "conflict", "需要修复登录", "一键修好", "fix"
+	case checked.secret == secret && checked.err != nil:
+		st.State, st.Badge, st.Button, st.Action = "offline", "暂时连不上", "一键修好", "fix"
+		if errors.Is(checked.err, errExpired) {
+			st.State, st.Badge, st.Button, st.Action = "expired", "需要重新接上", "重新接上", "connect"
+		}
+	}
+}
+
+// Both a new connection and a repair must finish with the same catalog,
+// optional GUI installation and home notice before refreshing the cards.
+func (a *App) finishDesktopConnection(agent string) {
+	if a.getView().Screen != "success" {
+		a.desktopRefresh()
+		return
+	}
+	guiAutoStarted := false
+	if secret, ok := a.env.Configured(agent, a.origin); ok {
+		a.syncDesktopCatalog(agent, secret)
+		if a.shouldAutoInstallGUI(agent) {
+			guiAutoStarted = a.startDesktopInstall(agent, "gui") == nil
+		}
+	}
+	a.desktopSuccess(agent)
+	if guiAutoStarted && a.getView().Screen == "home" {
+		a.setView(View{
+			Screen: "home", Agent: agent,
+			Notice: agentName(agent) + " 已接通，正在后台为你安装官方桌面版……",
+		})
+	}
+	a.desktopRefresh()
 }
 
 // DesktopAction is called by a single worker. Only explicitly enumerated
 // operations are available; there is no generic process or filesystem API.
 func (a *App) DesktopAction(r DesktopRequest) error {
 	switch r.Action {
-	case "refresh", "home", "cancel-install", "check-updates", "restore", "restore-confirm", "support", "recharge", "open-pricing", "open-web", "usage-load", "switch-account", "pick-work-dir", "set-work-dir":
+	case "refresh", "home", "cancel-install", "check-updates", "restore", "restore-confirm", "support", "recharge", "open-pricing", "open-web", "usage-load", "skills-catalog-load", "switch-account", "pick-work-dir", "set-work-dir":
 	default:
 		if !validAgent(r.Agent) {
 			return errors.New("请选择 Claude Code 或 Codex")
 		}
 	}
+	r = a.reserveDesktopRequest(r)
 	switch r.Action {
 	case "refresh":
 		// Runs behind the cards: they keep their last state until the new one is in.
 		for _, agent := range []string{"claude", "codex"} {
-			if _, configured := a.env.Configured(agent, a.origin); configured {
-				_ = a.desktopCheck(agent)
+			if secret, configured := a.env.Configured(agent, a.origin); configured {
+				_ = a.checkConnection(agent, secret)
 			}
 		}
 		a.desktopRefresh()
@@ -309,31 +327,16 @@ func (a *App) DesktopAction(r DesktopRequest) error {
 			return errors.New("没能打开浏览器，请访问 jieshangai.com")
 		}
 	case "usage-load":
-		_, err := a.fetchUsage(r.Range)
+		_, err := a.fetchReservedUsage(r.Range, r.read)
 		return err
 	case "catalog-load":
-		secret, ok := a.env.Configured(r.Agent, a.origin)
-		if !ok || strings.TrimSpace(secret) == "" {
-			a.mu.Lock()
-			if a.catalogs != nil {
-				delete(a.catalogs, r.Agent)
-			}
-			a.mu.Unlock()
-			return nil
-		}
-		cat, err := a.fetchDesktopCatalog(secret)
+		err := a.loadReservedDesktopCatalog(r.read, "", false)
 		if err != nil {
 			if errors.Is(err, errExpired) {
 				return errors.New("连接凭证已失效，请回首页重新接上后再看可用模型")
 			}
 			return errors.New("暂时读不到可用模型清单，请稍后再试")
 		}
-		a.mu.Lock()
-		if a.catalogs == nil {
-			a.catalogs = make(map[string]*DesktopCatalogPayload)
-		}
-		a.catalogs[r.Agent] = cat
-		a.mu.Unlock()
 	case "recharge":
 		a.mu.Lock()
 		ws := a.workspace
@@ -381,12 +384,21 @@ func (a *App) DesktopAction(r DesktopRequest) error {
 			return err
 		}
 		cachePrompts(r.Agent, list)
-	case "skills-list", "skill-import", "skill-import-zip", "skill-enable", "skill-disable", "skill-delete":
+	case "skills-catalog-load":
+		a.mu.Lock()
+		epoch := a.walletEpoch
+		a.skillCatalogReq++
+		seq := a.skillCatalogReq
+		a.mu.Unlock()
+		return a.loadReservedRemoteSkillsCatalog(epoch, seq, r.Agent)
+	case "skills-list", "skill-import", "skill-import-zip", "skill-install-remote", "skill-enable", "skill-disable", "skill-delete":
 		var list []Skill
 		var err error
 		switch r.Action {
 		case "skill-import-zip":
 			list, err = ImportSkillZip(r.Agent, r.SkillZip)
+		case "skill-install-remote":
+			list, err = a.installRemoteSkill(r.Agent, r.SkillDir)
 		case "skills-list":
 			list, err = ListSkills(r.Agent)
 		case "skill-import":
@@ -400,6 +412,13 @@ func (a *App) DesktopAction(r DesktopRequest) error {
 			return err
 		}
 		cacheSkills(r.Agent, list)
+		if r.Action == "skill-install-remote" {
+			a.setView(View{
+				Screen: "home",
+				Agent:  r.Agent,
+				Notice: "已一键安装并启用 Skill（" + strings.TrimSpace(r.SkillDir) + "），新开的会话会自动加载。",
+			})
+		}
 	case "mcp-list", "mcp-save", "mcp-enable", "mcp-disable", "mcp-delete":
 		// Claude Code rewrites ~/.claude.json from memory while it runs and would
 		// drop the change, so edits wait until it is closed.
@@ -448,25 +467,7 @@ func (a *App) DesktopAction(r DesktopRequest) error {
 		} else {
 			a.setView(errorView("reauth", r.Agent))
 		}
-		_ = a.desktopCheck(r.Agent)
-		guiAutoStarted := false
-		if secret, ok := a.env.Configured(r.Agent, a.origin); ok {
-			a.syncDesktopCatalog(r.Agent, secret)
-			if a.shouldAutoInstallGUI(r.Agent) {
-				if err := a.startDesktopInstall(r.Agent, "gui"); err == nil {
-					guiAutoStarted = true
-				}
-			}
-		}
-		a.desktopSuccess(r.Agent)
-		if guiAutoStarted && a.getView().Screen == "home" {
-			a.setView(View{
-				Screen: "home",
-				Agent:  r.Agent,
-				Notice: agentName(r.Agent) + " 已接通，正在后台为你安装官方桌面版……",
-			})
-		}
-		a.desktopRefresh()
+		a.finishDesktopConnection(r.Agent)
 	case "install":
 		err := a.installDesktopComponent(r.Agent, "cli")
 		a.desktopLocalRefresh()
@@ -508,7 +509,7 @@ func (a *App) DesktopAction(r DesktopRequest) error {
 		a.setView(View{Screen: "home", Agent: r.Agent, Notice: "已请求打开官方桌面版，请在新窗口中继续。"})
 	case "check":
 		a.setView(working(r.Agent, "正在检查连接……"))
-		err := a.desktopCheck(r.Agent)
+		err := a.checkConnection(r.Agent, a.secretFor(r.Agent))
 		if err != nil {
 			a.fail(r.Agent, err, "connection-test-failed", "")
 		} else if a.env.OfficialLogin(r.Agent) {
@@ -563,7 +564,7 @@ func (a *App) DesktopAction(r DesktopRequest) error {
 		secret, ok := a.env.Configured(r.Agent, a.origin)
 		checkErr := errExpired
 		if ok {
-			checkErr = a.desktopCheck(r.Agent)
+			checkErr = a.checkConnection(r.Agent, secret)
 		}
 		if errors.Is(checkErr, errNetwork) {
 			a.fail(r.Agent, checkErr, "connection-test-failed", "")
@@ -579,25 +580,7 @@ func (a *App) DesktopAction(r DesktopRequest) error {
 		} else {
 			a.setView(errorView("reauth", r.Agent))
 		}
-		_ = a.desktopCheck(r.Agent)
-		guiAutoStarted := false
-		if secret, ok := a.env.Configured(r.Agent, a.origin); ok {
-			a.syncDesktopCatalog(r.Agent, secret)
-			if a.shouldAutoInstallGUI(r.Agent) {
-				if err := a.startDesktopInstall(r.Agent, "gui"); err == nil {
-					guiAutoStarted = true
-				}
-			}
-		}
-		a.desktopSuccess(r.Agent)
-		if guiAutoStarted && a.getView().Screen == "home" {
-			a.setView(View{
-				Screen: "home",
-				Agent:  r.Agent,
-				Notice: agentName(r.Agent) + " 已接通，正在后台为你安装官方桌面版……",
-			})
-		}
-		a.desktopRefresh()
+		a.finishDesktopConnection(r.Agent)
 	case "restore":
 		v := View{Screen: "confirm", Line: "这会恢复 Claude 和 Codex 命令行及桌面版的接入设置，并停用接上AI添加的 MCP 服务和 Skills，不会删除助手或你的文件。", Button: "全部恢复", Action: "restore-confirm", Second: "先不", Second2: "home", Note: "只恢复这台电脑。网上停用连接请前往我的账户。"}
 		if a.env.Edited() {
@@ -637,7 +620,8 @@ func (a *App) DesktopAction(r DesktopRequest) error {
 		a.today = nil
 		a.usage = nil
 		a.catalogs = nil
-		a.desktopStates = make(map[string]AgentStatus)
+		a.skillCatalog = nil
+		a.desktopChecks = make(map[string]desktopConnectionCheck)
 		a.mu.Unlock()
 		a.setView(View{Screen: "home", Notice: "两个助手的接上AI设置已经恢复。"})
 		a.desktopRefresh()
@@ -650,7 +634,7 @@ func (a *App) DesktopAction(r DesktopRequest) error {
 // listOnly reports the read-only list actions that bypass the serial worker.
 func listOnly(action string) bool {
 	switch action {
-	case "prompts-list", "mcp-list", "skills-list", "usage-load", "catalog-load":
+	case "prompts-list", "mcp-list", "skills-list", "skills-catalog-load", "usage-load", "catalog-load":
 		return true
 	}
 	return false
@@ -727,11 +711,27 @@ func (a *App) ServeDesktop(input io.Reader, output io.Writer) error {
 			}
 		}
 	}()
+	var cachedTools map[string]ToolStatus
+	if a.env.ToolSnapshot != nil {
+		cachedTools = make(map[string]ToolStatus)
+		for _, tool := range a.env.ToolSnapshot() {
+			cachedTools[tool.Agent] = tool
+		}
+	}
 	for _, agent := range []string{"claude", "codex"} {
 		_, configured := a.env.Configured(agent, a.origin)
-		installed := a.env.FindCLI(agent)
+		installed, inspected := false, true
+		if cachedTools != nil {
+			// A cold --version process can take seconds. Publish cached facts and
+			// start reading the pipe before the serial worker performs any probes.
+			installed, inspected = cachedTools[agent].CLIInstalled, cachedTools[agent].Inspected
+		} else {
+			installed = a.env.FindCLI(agent)
+		}
 		st := AgentStatus{Agent: agent, Name: agentName(agent), Installed: installed, Configured: configured, State: "none", Badge: badgeUnconnected}
-		if !installed {
+		if !inspected {
+			st.State, st.Badge = "checking", "正在检查"
+		} else if !installed {
 			st.State, st.Badge = "nocli", badgeNoCLI
 		} else if configured {
 			st.State, st.Badge = "checking", "正在检查"
@@ -773,6 +773,9 @@ func (a *App) ServeDesktop(input io.Reader, output io.Writer) error {
 		// List reads never wait behind the serial worker (the startup refresh
 		// can take seconds); their own locks keep them consistent with writes.
 		if listOnly(r.Action) {
+			// Scheduling may reverse goroutine start order. Reserve sequence and
+			// wallet epoch here; configuration reads still run off the scanner.
+			r = a.reserveDesktopRequest(r)
 			go func(r DesktopRequest) {
 				message := ""
 				if err := a.DesktopAction(r); err != nil {

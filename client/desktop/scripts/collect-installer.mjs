@@ -1,6 +1,7 @@
 import {
   readdirSync,
   copyFileSync,
+  createReadStream,
   mkdirSync,
   readFileSync,
   writeFileSync,
@@ -23,10 +24,11 @@ if (files.length !== 1) throw new Error("Expected exactly one installer");
 mkdirSync("artifacts", { recursive: true });
 const output = `${name}${extension}`;
 copyFileSync(resolve(directory, files[0]), resolve("artifacts", output));
-const hash = createHash("sha256")
-  .update(readFileSync(resolve("artifacts", output)))
-  .digest("hex");
-writeFileSync(resolve("artifacts", "SHA256SUMS.txt"), `${hash}  ${output}\n`);
+const checksum = createHash("sha256");
+for await (const chunk of createReadStream(resolve("artifacts", output))) {
+  checksum.update(chunk);
+}
+writeFileSync(resolve("artifacts", "SHA256SUMS.txt"), `${checksum.digest("hex")}  ${output}\n`);
 
 // A signed update payload is separate from the interactive DMG installer.
 // Keep one manifest fragment per architecture; publishing merges these fragments.

@@ -10,6 +10,7 @@ import {
   ChevronsUpDown,
   Copy,
   Cpu,
+  Download,
   ExternalLink,
   FileText,
   FolderOpen,
@@ -60,10 +61,12 @@ import {
   desktopMcpAction,
   desktopSetWorkDir,
   desktopSkillAction,
+  desktopSkillsCatalog,
   desktopSwitchTier,
   desktopPromptAction,
   desktopState,
   desktopUsage,
+  desktopWalletIdentity,
   onDesktopState,
   checkAppUpdate,
   applyAppUpdate,
@@ -152,9 +155,18 @@ function DesktopShell() {
   const lastFocusRefreshRef = useRef(0);
   const lastUsageWalletRef = useRef("");
   const lastCatalogKeyRef = useRef("");
+  const lastSkillCatalogWalletRef = useRef("");
+  const usageRequestRef = useRef(0);
+  const catalogRequestRef = useRef(0);
+  const skillCatalogRequestRef = useRef(0);
+  const panelRequestRef = useRef(0);
 
   const [state, setState] = useState<DesktopState>();
+  const stateRef = useRef(state);
+  stateRef.current = state;
   const [page, setPage] = useState<Page>("home");
+  const pageRef = useRef(page);
+  pageRef.current = page;
   const [pending, setPending] = useState(false);
   const [error, setError] = useState("");
   const [copied, setCopied] = useState("");
@@ -167,8 +179,12 @@ function DesktopShell() {
   const [usageRange, setUsageRange] = useState<UsageRange>("24h");
   const [usageLoading, setUsageLoading] = useState(false);
   const [catalogLoading, setCatalogLoading] = useState(false);
+  const [skillCatalogLoading, setSkillCatalogLoading] = useState(false);
+  const [skillCatalogError, setSkillCatalogError] = useState("");
   const [clientUpdate, setClientUpdate] = useState<AppUpdate>();
+  const [availableUpdate, setAvailableUpdate] = useState<AppUpdate>();
   const [availableVersion, setAvailableVersion] = useState("");
+  const [dismissedUpdateVersion, setDismissedUpdateVersion] = useState("");
   const [clientChecking, setClientChecking] = useState(false);
   const [clientUpdating, setClientUpdating] = useState(false);
   const [updateProgress, setUpdateProgress] = useState("");
@@ -250,7 +266,10 @@ function DesktopShell() {
       }
       void checkAppUpdate()
         .then((update) => {
-          if (active && update.available) setAvailableVersion(update.version || "新版本");
+          if (active && update.available) {
+            setAvailableUpdate(update);
+            setAvailableVersion(update.version || "新版本");
+          }
         })
         .catch(() => {});
     }, 5000);
@@ -290,7 +309,9 @@ function DesktopShell() {
     setError("");
     try {
       const update = await checkAppUpdate();
+      setAvailableUpdate(update.available ? update : undefined);
       setAvailableVersion(update.available ? update.version || "新版本" : "");
+      if (update.available) setDismissedUpdateVersion("");
       setClientUpdate(update);
     } catch (err) {
       setError(message(err, "更新检查未完成，当前版本仍可使用。"));
@@ -329,44 +350,60 @@ function DesktopShell() {
     }
   }, [checkedClean]);
 
-  async function loadUsage(nextRange: UsageRange, walletKey?: string) {
+  async function loadUsage(nextRange: UsageRange) {
+    const walletKey = desktopWalletIdentity(stateRef.current);
+    const request = ++usageRequestRef.current;
     const previousRange = state?.usage?.range ?? usageRange;
-    if (walletKey !== undefined) lastUsageWalletRef.current = walletKey;
+    // An attempt is separate from cached data: a failed first load waits for
+    // an explicit retry, page revisit, or connection change.
+    lastUsageWalletRef.current = walletKey;
     setUsageRange(nextRange);
     setUsageLoading(true);
     setError("");
     try {
       const next = await desktopUsage(nextRange);
+      if (request !== usageRequestRef.current || walletKey !== desktopWalletIdentity(stateRef.current)) return;
       applyState(next);
-      lastUsageWalletRef.current = `${next.workspace?.kind ?? ""}|${next.workspace?.label ?? ""}|${next.accountLabel ?? ""}`;
       if (next.usage?.range) setUsageRange(next.usage.range);
     } catch (err) {
+      if (request !== usageRequestRef.current || walletKey !== desktopWalletIdentity(stateRef.current)) return;
       setUsageRange(previousRange);
-      setError(message(err, "没能读取用量记录，请再试一次。"));
+      if (pageRef.current === "usage") setError(message(err, "没能读取用量记录，请再试一次。"));
     } finally {
-      setUsageLoading(false);
+      if (request === usageRequestRef.current) setUsageLoading(false);
     }
   }
-  async function loadPanel(next: Page, agent: Agent, walletKey?: string) {
+  async function loadPanel(next: Page, agent: Agent) {
+    const panelRequest = ++panelRequestRef.current;
     setPanelAgent(agent);
     setError("");
     try {
       if (next === "models") {
-        if (walletKey !== undefined) lastCatalogKeyRef.current = `${walletKey}|${agent}`;
+        const walletKey = desktopWalletIdentity(stateRef.current);
+        const request = ++catalogRequestRef.current;
+        lastCatalogKeyRef.current = `${walletKey}|${agent}`;
         setCatalogLoading(true);
         try {
           const updated = await desktopCatalog(agent);
+          if (request !== catalogRequestRef.current || walletKey !== desktopWalletIdentity(stateRef.current)) return;
           applyState(updated);
-          lastCatalogKeyRef.current = `${updated.workspace?.kind ?? ""}|${updated.workspace?.label ?? ""}|${updated.accountLabel ?? ""}|${agent}`;
+        } catch (err) {
+          if (request === catalogRequestRef.current && walletKey === desktopWalletIdentity(stateRef.current) && pageRef.current === "models") {
+            setError(message(err, "没能读取可用模型，请再试一次。"));
+          }
         } finally {
-          setCatalogLoading(false);
+          if (request === catalogRequestRef.current) setCatalogLoading(false);
         }
         return;
       }
       if (next === "prompts") applyState(await desktopPromptAction("prompts-list", agent));
       if (next === "mcp") applyState(await desktopMcpAction("mcp-list", agent));
-      if (next === "skills") applyState(await desktopSkillAction("skills-list", agent));
+      if (next === "skills") {
+        applyState(await desktopSkillAction("skills-list", agent));
+        void loadSkillCatalog(agent);
+      }
     } catch (err) {
+      if (panelRequest !== panelRequestRef.current || pageRef.current !== next) return;
       const what =
         next === "models"
           ? "可用模型"
@@ -379,21 +416,45 @@ function DesktopShell() {
     }
   }
   function go(next: Page) {
+    ++panelRequestRef.current;
+    if (next === "usage") lastUsageWalletRef.current = "";
+    if (next === "models") lastCatalogKeyRef.current = "";
+    if (next === "skills") lastSkillCatalogWalletRef.current = "";
     setPage(next);
     setError("");
-    if (next === "usage") {
-      void loadUsage(usageRange);
+    if (!["home", "settings", "usage", "models"].includes(next)) void loadPanel(next, panelAgent);
+  }
+  async function loadSkillCatalog(agent?: Agent) {
+    const connectedNow = !!stateRef.current?.statuses?.some((s) => s.state === "ok");
+    if (!connectedNow) {
+      setSkillCatalogError("");
       return;
     }
-    if (next !== "home" && next !== "settings") void loadPanel(next, panelAgent);
+    const walletKey = desktopWalletIdentity(stateRef.current);
+    const request = ++skillCatalogRequestRef.current;
+    lastSkillCatalogWalletRef.current = walletKey;
+    setSkillCatalogLoading(true);
+    setSkillCatalogError("");
+    try {
+      const updated = await desktopSkillsCatalog(agent);
+      if (request !== skillCatalogRequestRef.current || walletKey !== desktopWalletIdentity(stateRef.current)) return;
+      applyState(updated);
+    } catch (err) {
+      if (request !== skillCatalogRequestRef.current || walletKey !== desktopWalletIdentity(stateRef.current)) return;
+      setSkillCatalogError(message(err, "暂时读不到官方 Skill 广场，请稍后再试。"));
+    } finally {
+      if (request === skillCatalogRequestRef.current) setSkillCatalogLoading(false);
+    }
   }
   async function runPrompt(action: "prompt-save" | "prompt-enable" | "prompt-delete", args: PromptArgs) {
     setPending(true);
     setError("");
     try {
       applyState(await desktopPromptAction(action, panelAgent, args));
+      return true;
     } catch (err) {
       setError(message(err, "提示词操作没能完成，请再试一次。"));
+      return false;
     } finally {
       setPending(false);
     }
@@ -415,13 +476,18 @@ function DesktopShell() {
     }
   }
   async function runSkill(
-    action: "skill-import" | "skill-import-zip" | "skill-enable" | "skill-disable" | "skill-delete",
+    action: "skill-import" | "skill-import-zip" | "skill-install-remote" | "skill-enable" | "skill-disable" | "skill-delete",
     dir: string,
   ) {
     setPending(true);
     setError("");
     try {
-      applyState(await desktopSkillAction(action, panelAgent, dir));
+      const next = await desktopSkillAction(action, panelAgent, dir);
+      applyState(next);
+      if (next.view.notice) {
+        setGoneNotice("");
+        setNoticeSeq((n) => n + 1);
+      }
       return true;
     } catch (err) {
       setError(message(err, "Skill 操作没能完成，请再试一次。"));
@@ -459,16 +525,30 @@ function DesktopShell() {
     } catch (err) {
       setError(message(err, "操作没能完成，请再试一次。"));
     } finally {
-      setPending(false);
+      if (!background) setPending(false);
     }
   }
   // One button checks both assistants and this client; updates follow from it.
   const toolUpdatesReady = (state?.tools ?? []).filter((t) => t.updateAvailable).map((t) => t.agent);
   async function checkAll() {
     void checkAppUpdate()
-      .then((update) => setAvailableVersion(update.available ? update.version || "新版本" : ""))
+      .then((update) => {
+        setAvailableUpdate(update.available ? update : undefined);
+        setAvailableVersion(update.available ? update.version || "新版本" : "");
+        if (update.available) {
+          setDismissedUpdateVersion("");
+          setClientUpdate(update);
+        }
+      })
       .catch(() => {});
     await act("check-updates");
+  }
+  function openAvailableUpdate() {
+    if (availableUpdate?.available) {
+      setClientUpdate(availableUpdate);
+      return;
+    }
+    void checkClientUpdate();
   }
   async function updateAll() {
     for (const agent of toolUpdatesReady) await act("update-tool", agent);
@@ -547,24 +627,30 @@ function DesktopShell() {
   const preferredSwitchAgent: Agent | undefined = codexConnected && !claudeConnected ? "codex" : undefined;
   const panelAgentConnected = !!state?.statuses?.some((s) => s.agent === panelAgent && s.state === "ok");
   const workspaceLabel = state?.workspace?.label || "个人工作区";
-  const walletIdentity = `${state?.workspace?.kind ?? ""}|${state?.workspace?.label ?? ""}|${state?.accountLabel ?? ""}`;
+  const walletIdentity = desktopWalletIdentity(state);
   const isTeamWorkspace = state?.workspace?.kind === "team";
   const WorkspaceIcon = isTeamWorkspace ? Building2 : User;
 
   // When a deep-link or account switch changes the active wallet while the user is on Usage or Models,
   // automatically reload that page's server data so stale wallet numbers never linger.
   useEffect(() => {
-    if (page !== "usage" || !anyConnected || usageLoading || busy || unavailable) return;
-    if (lastUsageWalletRef.current === walletIdentity && state?.usage) return;
-    void loadUsage(usageRange, walletIdentity);
-  }, [page, anyConnected, walletIdentity, state?.usage, usageRange, usageLoading, busy, unavailable]); // eslint-disable-line react-hooks/exhaustive-deps
+    if (page !== "usage" || !anyConnected || busy || unavailable) return;
+    if (lastUsageWalletRef.current === walletIdentity) return;
+    void loadUsage(usageRange);
+  }, [page, anyConnected, walletIdentity, usageRange, busy, unavailable]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
-    if (page !== "models" || !panelAgentConnected || catalogLoading || busy || unavailable) return;
+    if (page !== "models" || !panelAgentConnected || busy || unavailable) return;
     const key = `${walletIdentity}|${panelAgent}`;
-    if (lastCatalogKeyRef.current === key && state?.catalogs?.[panelAgent]) return;
-    void loadPanel("models", panelAgent, walletIdentity);
-  }, [page, panelAgent, panelAgentConnected, walletIdentity, catalogLoading, busy, unavailable]); // eslint-disable-line react-hooks/exhaustive-deps
+    if (lastCatalogKeyRef.current === key) return;
+    void loadPanel("models", panelAgent);
+  }, [page, panelAgent, panelAgentConnected, walletIdentity, busy, unavailable]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    if (page !== "skills" || !anyConnected || busy || unavailable) return;
+    if (lastSkillCatalogWalletRef.current === walletIdentity) return;
+    void loadSkillCatalog(panelAgent);
+  }, [page, panelAgent, anyConnected, walletIdentity, busy, unavailable]); // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
     <div className="flex h-full min-h-0 w-full overflow-hidden bg-surface-1 text-foreground">
@@ -672,6 +758,9 @@ function DesktopShell() {
                 >
                   <Icon size={16} strokeWidth={active ? 2 : 1.5} aria-hidden="true" />
                   <span>{t(`nav.${value}`)}</span>
+                  {value === "settings" && availableVersion && (
+                    <span className="ml-auto size-2 rounded-full bg-primary" aria-hidden="true" />
+                  )}
                 </button>
               </div>
             );
@@ -738,9 +827,23 @@ function DesktopShell() {
               联系客服
             </Button>
           )}
-          <span className={cn(typeClass("micro"), "px-2 text-muted-foreground")}>
-            接上AI {state?.version ?? ""}
-          </span>
+          <button
+            type="button"
+            disabled={clientChecking || clientUpdating}
+            onClick={() => (availableVersion ? openAvailableUpdate() : void checkClientUpdate())}
+            title={availableVersion ? `点击更新至 ${availableVersion}` : "点击检查客户端更新"}
+            className={cn(
+              typeClass("micro"),
+              "flex w-full items-center justify-between gap-2 rounded-md px-2 py-1 text-left text-muted-foreground transition-colors hover:bg-hover hover:text-foreground disabled:opacity-50",
+            )}
+          >
+            <span className="truncate">接上AI {state?.version ?? ""}</span>
+            {availableVersion && (
+              <Badge variant="solid" color="accent" size="compact">
+                有更新
+              </Badge>
+            )}
+          </button>
         </div>
       </aside>
 
@@ -758,10 +861,11 @@ function DesktopShell() {
               <div className="flex items-center gap-2">
                 {availableVersion && (
                   <Button
-                    variant="ghost"
+                    variant={toolUpdatesReady.length > 0 ? "tertiary" : "primary"}
                     size="compact"
+                    leadingIcon={Download}
                     disabled={clientChecking || clientUpdating}
-                    onClick={() => void checkClientUpdate()}
+                    onClick={openAvailableUpdate}
                   >
                     接上AI 有更新
                   </Button>
@@ -798,6 +902,30 @@ function DesktopShell() {
           {test && page === "home" && (
             <Banner status="warning" contrast="low" size="compact">
               <BannerTitle>测试版，请勿用于正式账户。</BannerTitle>
+            </Banner>
+          )}
+          {availableVersion && dismissedUpdateVersion !== availableVersion && (
+            <Banner
+              status="info"
+              contrast="low"
+              size="compact"
+              dismissible
+              dismissLabel="暂不提醒此版本"
+              onDismiss={() => setDismissedUpdateVersion(availableVersion)}
+            >
+              <BannerTitle>接上AI 有新版本 {availableVersion} 可用</BannerTitle>
+              <BannerDescription>
+                {availableUpdate?.notes || "包含最新功能与稳定性优化，更新后会自动保留你当前的连接配置。"}
+              </BannerDescription>
+              <BannerActions>
+                <BannerAction
+                  variant="primary"
+                  disabled={clientChecking || clientUpdating || installing}
+                  onClick={openAvailableUpdate}
+                >
+                  立即更新
+                </BannerAction>
+              </BannerActions>
             </Banner>
           )}
           {page === "home" && anyConnected && state?.balance?.low && (
@@ -1069,7 +1197,20 @@ function DesktopShell() {
             />
           )}
           {page === "skills" && (
-            <SkillsPanel key={panelAgent} agent={panelAgent} skills={state?.skills?.[panelAgent] ?? []} busy={busy} run={runSkill} />
+            <SkillsPanel
+              key={panelAgent}
+              agent={panelAgent}
+              skills={state?.skills?.[panelAgent] ?? []}
+              busy={busy}
+              run={runSkill}
+              catalog={state?.skillCatalog}
+              catalogLoading={skillCatalogLoading}
+              catalogError={skillCatalogError}
+              connected={anyConnected}
+              onRefreshCatalog={() => void loadSkillCatalog(panelAgent)}
+              onRecharge={() => void act("recharge")}
+              onGoHome={() => go("home")}
+            />
           )}
           {page === "mcp" && (
             <McpPanel key={panelAgent} agent={panelAgent} servers={state?.mcp?.[panelAgent] ?? []} busy={busy} run={runMcp} />

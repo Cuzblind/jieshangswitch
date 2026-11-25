@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 )
 
@@ -37,6 +38,15 @@ func TestMirrorGUIReleaseURLsAndSubdomainPolicy(t *testing.T) {
 		}
 		if !allowedDownloadURL(rel.URL) {
 			t.Fatalf("mirror URL rejected by allowlist: %s", rel.URL)
+		}
+	}
+
+	for _, tc := range []struct{ goos, arch, agent string }{
+		{"linux", "amd64", "claude"},
+		{"windows", "amd64", "gemini"},
+	} {
+		if _, err := mirrorGUIRelease(tc.goos, tc.arch, tc.agent); err == nil {
+			t.Fatalf("unsupported mirror target accepted: %+v", tc)
 		}
 	}
 
@@ -143,7 +153,11 @@ func TestToolDownloadReportsPercentageProgress(t *testing.T) {
 func TestConnectAutoStartsMissingGUIAndTierSwitchWarnsRunningGUI(t *testing.T) {
 	g := &fakeGW{models: 200}
 	base := g.handler()
+	var probes atomic.Int32
 	gw := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/models" {
+			probes.Add(1)
+		}
 		if r.URL.Path == "/api/install/tier" && r.Method == http.MethodPut {
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"success": true,
@@ -182,6 +196,9 @@ func TestConnectAutoStartsMissingGUIAndTierSwitchWarnsRunningGUI(t *testing.T) {
 		t.Fatal(err)
 	}
 	<-installDone
+	if got := probes.Load(); got != 1 {
+		t.Fatalf("new connection ran %d model probes, want 1", got)
+	}
 	mu.Lock()
 	gotComp := installedComponent
 	mu.Unlock()

@@ -7,7 +7,7 @@ import (
 	"os"
 )
 
-var version = "0.2.0-beta.11"
+var version = "0.2.0-beta.12"
 
 func main() {
 	if len(os.Args) == 3 && os.Args[1] == "--prepare-offline" {

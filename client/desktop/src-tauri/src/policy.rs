@@ -45,8 +45,10 @@ pub enum Action {
     McpDisable,
     McpDelete,
     SkillsList,
+    SkillsCatalogLoad,
     SkillImport,
     SkillImportZip,
+    SkillInstallRemote,
     SkillEnable,
     SkillDisable,
     SkillDelete,
@@ -95,8 +97,10 @@ impl Action {
             Self::McpDisable => "mcp-disable",
             Self::McpDelete => "mcp-delete",
             Self::SkillsList => "skills-list",
+            Self::SkillsCatalogLoad => "skills-catalog-load",
             Self::SkillImport => "skill-import",
             Self::SkillImportZip => "skill-import-zip",
+            Self::SkillInstallRemote => "skill-install-remote",
             Self::SkillEnable => "skill-enable",
             Self::SkillDisable => "skill-disable",
             Self::SkillDelete => "skill-delete",
@@ -137,6 +141,7 @@ impl Action {
                 | Self::SkillsList
                 | Self::SkillImport
                 | Self::SkillImportZip
+                | Self::SkillInstallRemote
                 | Self::SkillEnable
                 | Self::SkillDisable
                 | Self::SkillDelete
@@ -275,6 +280,13 @@ mod tests {
         assert!(action.picks_skill_zip());
         let other: Action = serde_json::from_value(serde_json::json!("skill-import")).unwrap();
         assert!(!other.picks_skill_zip());
+        let catalog: Action = serde_json::from_value(serde_json::json!("skills-catalog-load")).unwrap();
+        assert_eq!(catalog.name(), "skills-catalog-load");
+        assert!(!catalog.requires_agent());
+        let remote: Action = serde_json::from_value(serde_json::json!("skill-install-remote")).unwrap();
+        assert_eq!(remote.name(), "skill-install-remote");
+        assert!(remote.requires_agent());
+        assert!(!remote.picks_skill_zip());
     }
 
     #[test]

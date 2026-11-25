@@ -1,4 +1,4 @@
-import { useMemo, useRef } from "react";
+import { memo, useRef } from "react";
 import { Activity, Coins, Hash, RefreshCw } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -182,6 +182,105 @@ function RangeTabs({
   );
 }
 
+const ActivityHeatmap = memo(function ActivityHeatmap({ days }: { days?: UsageHeatmapDay[] }) {
+  const { weeks, monthMarkers } = buildHeatmapWeeks(days ?? []);
+  return (
+    <Elevated offset={2} shadowLevel={1} className="rounded-xl">
+      <Card className="flex flex-col gap-3 rounded-xl p-4" aria-label="年度活跃度热力图" role="region">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <span className={cn(typeClass("caption"), "text-foreground")} style={{ fontVariationSettings: fontWeights.semibold }}>
+            近 365 天活跃度
+          </span>
+          <div className="flex items-center gap-1.5">
+            <span className={cn(typeClass("micro"), "text-muted-foreground")}>少</span>
+            {([0, 1, 2, 3, 4] as const).map((lvl) => (
+              <span key={lvl} className={cn("size-2.5 rounded-[2px]", HEATMAP_LEVEL_CLASS[lvl])} aria-hidden="true" />
+            ))}
+            <span className={cn(typeClass("micro"), "text-muted-foreground")}>多</span>
+          </div>
+        </div>
+
+        <div className="overflow-x-auto pb-1">
+          <TooltipProvider delayDuration={80} skipDelayDuration={250} disableHoverableContent>
+            <div className="inline-flex flex-col gap-1.5 min-w-max">
+              <div className="relative h-4">
+                {monthMarkers.map((m) => (
+                  <span
+                    key={`${m.weekIndex}-${m.label}`}
+                    className={cn(typeClass("micro"), "absolute text-muted-foreground")}
+                    style={{ left: `${m.weekIndex * 13}px` }}
+                  >
+                    {m.label}
+                  </span>
+                ))}
+              </div>
+              <div
+                role="grid"
+                aria-label="近 365 天活跃度日历，使用方向键浏览日期"
+                className="flex gap-[3px]"
+                onKeyDown={(e) => {
+                  const target = e.target as HTMLElement | null;
+                  const idxAttr = target?.getAttribute("data-heatmap-idx");
+                  if (idxAttr == null) return;
+                  const cur = Number(idxAttr);
+                  const total = weeks.reduce((sum, w) => sum + w.length, 0);
+                  let next = cur;
+                  if (e.key === "ArrowRight") next = Math.min(total - 1, cur + 7);
+                  else if (e.key === "ArrowLeft") next = Math.max(0, cur - 7);
+                  else if (e.key === "ArrowDown") next = Math.min(total - 1, cur + 1);
+                  else if (e.key === "ArrowUp") next = Math.max(0, cur - 1);
+                  else if (e.key === "Home") next = 0;
+                  else if (e.key === "End") next = total - 1;
+                  else return;
+                  e.preventDefault();
+                  const cellEl = e.currentTarget.querySelector<HTMLElement>(`[data-heatmap-idx="${next}"]`);
+                  if (cellEl) {
+                    target?.setAttribute("tabindex", "-1");
+                    cellEl.setAttribute("tabindex", "0");
+                    cellEl.focus();
+                  }
+                }}
+              >
+                {weeks.map((week, wi) => {
+                  const baseIdx = wi * 7;
+                  return (
+                    <div key={wi} className="flex flex-col gap-[3px]">
+                      {week.map((cell, di) => {
+                        const flatIdx = baseIdx + di;
+                        return (
+                          <Tooltip
+                            key={cell.date}
+                            side="top"
+                            content={
+                              cell.requests > 0
+                                ? `${cell.date} · ${cell.requests} 次请求 · ${formatCompactTokens(cell.tokens)} tokens · ¥${cell.costCny}`
+                                : `${cell.date} · 暂无调用`
+                            }
+                          >
+                            <span
+                              tabIndex={flatIdx === 0 ? 0 : -1}
+                              data-heatmap-idx={flatIdx}
+                              aria-label={`${cell.date} ${cell.requests} 次请求`}
+                              className={cn(
+                                "block size-[10px] rounded-[2px] transition-opacity duration-80 hover:opacity-80 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
+                                HEATMAP_LEVEL_CLASS[cell.level],
+                              )}
+                            />
+                          </Tooltip>
+                        );
+                      })}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          </TooltipProvider>
+        </div>
+      </Card>
+    </Elevated>
+  );
+});
+
 export function UsagePage({
   usage,
   range,
@@ -201,7 +300,6 @@ export function UsagePage({
 }) {
   const rangeLabel = RANGES.find((r) => r.value === range)?.label ?? "24小时";
   const matched = !!usage && usage.range === range;
-  const { weeks, monthMarkers } = useMemo(() => buildHeatmapWeeks(usage?.heatmap ?? []), [usage?.heatmap]);
 
   if (!anyConnected) {
     return (
@@ -312,100 +410,7 @@ export function UsagePage({
         </Elevated>
       </section>
 
-      {/* 365-day Activity Heatmap */}
-      <Elevated offset={2} shadowLevel={1} className="rounded-xl">
-        <Card className="flex flex-col gap-3 rounded-xl p-4" aria-label="年度活跃度热力图" role="region">
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <span className={cn(typeClass("caption"), "text-foreground")} style={{ fontVariationSettings: fontWeights.semibold }}>
-              近 365 天活跃度
-            </span>
-            <div className="flex items-center gap-1.5">
-              <span className={cn(typeClass("micro"), "text-muted-foreground")}>少</span>
-              {([0, 1, 2, 3, 4] as const).map((lvl) => (
-                <span key={lvl} className={cn("size-2.5 rounded-[2px]", HEATMAP_LEVEL_CLASS[lvl])} aria-hidden="true" />
-              ))}
-              <span className={cn(typeClass("micro"), "text-muted-foreground")}>多</span>
-            </div>
-          </div>
-
-          <div className="overflow-x-auto pb-1">
-            <TooltipProvider delayDuration={80} skipDelayDuration={250} disableHoverableContent>
-              <div className="inline-flex flex-col gap-1.5 min-w-max">
-                <div className="relative h-4">
-                  {monthMarkers.map((m) => (
-                    <span
-                      key={`${m.weekIndex}-${m.label}`}
-                      className={cn(typeClass("micro"), "absolute text-muted-foreground")}
-                      style={{ left: `${m.weekIndex * 13}px` }}
-                    >
-                      {m.label}
-                    </span>
-                  ))}
-                </div>
-                <div
-                  role="grid"
-                  aria-label="近 365 天活跃度日历，使用方向键浏览日期"
-                  className="flex gap-[3px]"
-                  onKeyDown={(e) => {
-                    const target = e.target as HTMLElement | null;
-                    const idxAttr = target?.getAttribute("data-heatmap-idx");
-                    if (idxAttr == null) return;
-                    const cur = Number(idxAttr);
-                    const total = weeks.reduce((sum, w) => sum + w.length, 0);
-                    let next = cur;
-                    if (e.key === "ArrowRight") next = Math.min(total - 1, cur + 7);
-                    else if (e.key === "ArrowLeft") next = Math.max(0, cur - 7);
-                    else if (e.key === "ArrowDown") next = Math.min(total - 1, cur + 1);
-                    else if (e.key === "ArrowUp") next = Math.max(0, cur - 1);
-                    else if (e.key === "Home") next = 0;
-                    else if (e.key === "End") next = total - 1;
-                    else return;
-                    e.preventDefault();
-                    const cellEl = e.currentTarget.querySelector<HTMLElement>(`[data-heatmap-idx="${next}"]`);
-                    if (cellEl) {
-                      target?.setAttribute("tabindex", "-1");
-                      cellEl.setAttribute("tabindex", "0");
-                      cellEl.focus();
-                    }
-                  }}
-                >
-                  {weeks.map((week, wi) => {
-                    const baseIdx = weeks.slice(0, wi).reduce((sum, w) => sum + w.length, 0);
-                    return (
-                      <div key={wi} className="flex flex-col gap-[3px]">
-                        {week.map((cell, di) => {
-                          const flatIdx = baseIdx + di;
-                          return (
-                            <Tooltip
-                              key={cell.date}
-                              side="top"
-                              content={
-                                cell.requests > 0
-                                  ? `${cell.date} · ${cell.requests} 次请求 · ${formatCompactTokens(cell.tokens)} tokens · ¥${cell.costCny}`
-                                  : `${cell.date} · 暂无调用`
-                              }
-                            >
-                              <span
-                                tabIndex={flatIdx === 0 ? 0 : -1}
-                                data-heatmap-idx={flatIdx}
-                                aria-label={`${cell.date} ${cell.requests} 次请求`}
-                                className={cn(
-                                  "block size-[10px] rounded-[2px] transition-opacity duration-80 hover:opacity-80 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
-                                  HEATMAP_LEVEL_CLASS[cell.level],
-                                )}
-                              />
-                            </Tooltip>
-                          );
-                        })}
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>
-            </TooltipProvider>
-          </div>
-        </Card>
-      </Elevated>
+      <ActivityHeatmap days={usage?.heatmap} />
 
       {/* Recent Request Logs Table */}
       <Elevated offset={2} shadowLevel={1} className="rounded-xl">

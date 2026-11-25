@@ -167,25 +167,6 @@ func TestMSIXIdentityAndArchitecture(t *testing.T) {
 		}
 	}
 }
-func TestMirrorGUIReleaseURLs(t *testing.T) {
-	for _, tc := range []struct{ goos, arch, agent, url, format string }{
-		{"windows", "amd64", "claude", "https://claudeapp.agentsmirror.com/latest/win-x64", "msix"},
-		{"windows", "arm64", "codex", "https://codexapp.agentsmirror.com/latest/win-arm64", "msix"},
-		{"darwin", "arm64", "claude", "https://claudeapp.agentsmirror.com/latest/mac", "dmg"},
-		{"darwin", "amd64", "codex", "https://codexapp.agentsmirror.com/latest/mac-intel", "dmg"},
-	} {
-		r, err := mirrorGUIRelease(tc.goos, tc.arch, tc.agent)
-		if err != nil || r.URL != tc.url || r.Format != tc.format {
-			t.Fatalf("mirror release for %s/%s/%s: %+v %v", tc.goos, tc.arch, tc.agent, r, err)
-		}
-	}
-	if _, err := mirrorGUIRelease("linux", "amd64", "claude"); err == nil {
-		t.Fatal("unsupported platform accepted")
-	}
-	if _, err := mirrorGUIRelease("windows", "amd64", "gemini"); err == nil {
-		t.Fatal("unsupported agent accepted")
-	}
-}
 func TestMSIXStorePublisherGUIDAccepted(t *testing.T) {
 	// Both GUIDs were read from the vendors' real packages on 2026-10-29: the
 	// official codex-app-prod MSIX and the Store Claude package. Store signing

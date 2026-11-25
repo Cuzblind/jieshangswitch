@@ -191,6 +191,19 @@ func (a *App) progress(ticket string, beat int, status, code string) {
 	}
 }
 
+func (a *App) checkConnection(agent, secret string) error {
+	if secret == "" {
+		return errExpired
+	}
+	err := a.check(secret)
+	if a.desktop {
+		a.mu.Lock()
+		a.desktopChecks[agent] = desktopConnectionCheck{secret: secret, err: err}
+		a.mu.Unlock()
+	}
+	return err
+}
+
 // check is the light connectivity test (M8): GET /v1/models + Bearer, as /i.
 // Validates JSON response body so empty bodies, empty/null catalogs, or business
 // errors are never treated as a healthy connection.
@@ -274,16 +287,10 @@ func (a *App) fetchDesktopCatalog(secret string) (*DesktopCatalogPayload, error)
 // - On transient fetch error: preserves the previously written valid catalog.
 // - On explicit withdrawal (cat.Enabled == false) or zero authorized models: removes managed catalog entries.
 func (a *App) syncDesktopCatalog(agent, secret string) {
-	cat, err := a.fetchDesktopCatalog(secret)
-	if err != nil || cat == nil {
-		return
-	}
-	a.mu.Lock()
-	if a.catalogs == nil {
-		a.catalogs = make(map[string]*DesktopCatalogPayload)
-	}
-	a.catalogs[agent] = cat
-	a.mu.Unlock()
+	_ = a.loadDesktopCatalog(agent, secret, true)
+}
+
+func (a *App) writeDesktopCatalog(agent, secret string, cat *DesktopCatalogPayload) {
 	switch agent {
 	case "claude":
 		_ = configureDesktopGUIWithCatalog(agent, a.origin, secret, cat)
@@ -609,12 +616,12 @@ func (a *App) fetchBalanceAndTier(secret string) (*Balance, *balanceMeta, string
 		AccountDisabled bool `json:"account_disabled"`
 		Message         string
 		Data            struct {
-			BalanceCNY    json.RawMessage `json:"balance_cny"`
-			Low           bool            `json:"balance_low"`
-			Tier          string          `json:"tier"`
-			Tiers         []TierOption    `json:"tiers"`
-			AccountLabel  string          `json:"account_label"`
-			Workspace     *struct {
+			BalanceCNY   json.RawMessage `json:"balance_cny"`
+			Low          bool            `json:"balance_low"`
+			Tier         string          `json:"tier"`
+			Tiers        []TierOption    `json:"tiers"`
+			AccountLabel string          `json:"account_label"`
+			Workspace    *struct {
 				Kind   string `json:"kind"`
 				Label  string `json:"label"`
 				TeamID int    `json:"team_id"`
@@ -671,19 +678,6 @@ func (a *App) fetchBalanceAndTier(secret string) (*Balance, *balanceMeta, string
 	return balanceView(f, out.Data.Low), meta, out.Data.Tier, out.Data.Tiers, connOK
 }
 
-func (a *App) connectedSecret(preferredAgent string) string {
-	order := []string{"claude", "codex"}
-	if preferredAgent == "codex" {
-		order = []string{"codex", "claude"}
-	}
-	for _, ag := range order {
-		if secret, ok := a.env.Configured(ag, a.origin); ok && strings.TrimSpace(secret) != "" {
-			return secret
-		}
-	}
-	return ""
-}
-
 func normalizeUsageRange(raw string) string {
 	switch strings.ToLower(strings.TrimSpace(raw)) {
 	case "7d", "30d", "90d":
@@ -713,18 +707,25 @@ func walletIdentityKey(agent string, meta *balanceMeta) string {
 // fetchUsage loads the desktop Usage & Logs dashboard snapshot from /api/install/usage.
 // Always uses the same connected wallet that owns balance, workspace, and today summary.
 func (a *App) fetchUsage(rangeKey string) (*UsageSnapshot, error) {
+	return a.fetchReservedUsage(rangeKey, a.reserveDesktopRead("", true))
+}
+
+func (a *App) fetchReservedUsage(rangeKey string, r desktopRead) (snap *UsageSnapshot, err error) {
 	rangeKey = normalizeUsageRange(rangeKey)
-	a.mu.Lock()
-	walletAgent := a.walletAgent
-	startEpoch := a.walletEpoch
-	a.mu.Unlock()
-	secret := a.connectedSecret(walletAgent)
-	if secret == "" {
-		a.mu.Lock()
-		if a.walletEpoch == startEpoch {
-			a.usage = nil
+	r = a.beginDesktopRead(r, "")
+	defer func() {
+		a.connectionMu.Lock()
+		defer a.connectionMu.Unlock()
+		if !a.applyDesktopRead(r, false, func(bool) {
+			if err == nil {
+				a.usage = snap
+			}
+		}) {
+			snap, err = nil, nil
 		}
-		a.mu.Unlock()
+	}()
+	secret := r.secret
+	if secret == "" {
 		return nil, nil
 	}
 	req, _ := http.NewRequest(http.MethodGet, a.origin+"/api/install/usage?range="+rangeKey, nil)
@@ -794,7 +795,7 @@ func (a *App) fetchUsage(rangeKey string) (*UsageSnapshot, error) {
 	if cost == "" {
 		cost = "0.00"
 	}
-	snap := &UsageSnapshot{
+	snap = &UsageSnapshot{
 		Range:            normalizeUsageRange(out.Data.Range),
 		CostCNY:          cost,
 		Requests:         out.Data.Requests,
@@ -804,13 +805,6 @@ func (a *App) fetchUsage(rangeKey string) (*UsageSnapshot, error) {
 		Heatmap:          heatmap,
 		Logs:             logs,
 	}
-	a.mu.Lock()
-	if a.walletEpoch != startEpoch || a.walletAgent != walletAgent {
-		a.mu.Unlock()
-		return nil, nil
-	}
-	a.usage = snap
-	a.mu.Unlock()
 	return snap, nil
 }
 
@@ -848,6 +842,9 @@ func (a *App) switchTier(agent, group string) (string, error) {
 		}
 		return "", errors.New("没换成，还是原来的线路")
 	}
+	a.connectionMu.Lock()
+	a.invalidateConnectionData()
+	a.connectionMu.Unlock()
 	label := group
 	for _, t := range out.Data.Tiers {
 		if t.Name == out.Data.Tier && t.Label != "" {
@@ -891,6 +888,9 @@ type session struct {
 // restoreConnections trusts the machine state rather than the script's exit
 // code: a connection that is still configured means the restore did not work.
 func (a *App) restoreConnections() (bool, error) {
+	a.connectionMu.Lock()
+	defer a.connectionMu.Unlock()
+	a.invalidateConnectionData()
 	used, err := a.env.Restore(true)
 	if err != nil {
 		return used, err
@@ -967,13 +967,9 @@ func (a *App) finish(agent string, write bool) {
 	a.setView(connecting(agent, 2))
 	if write {
 		a.progress(s.ticket, 3, "running", "")
-		if err := a.env.Write(agent, a.origin, s.secret); err != nil {
+		if err := a.writeConnection(agent, s.secret); err != nil {
 			a.fail(agent, errOther, "config-write-failed", s.ticket)
 			return
-		}
-		if agent == "claude" {
-			// Skip Claude Code's first-run official OAuth onboarding wall on fresh machines.
-			_ = ensureClaudeOnboarding()
 		}
 	}
 	if cli == "failed" {
@@ -982,7 +978,7 @@ func (a *App) finish(agent string, write bool) {
 	}
 	a.setView(connecting(agent, 3))
 	a.progress(s.ticket, 4, "running", "")
-	if err := a.check(s.secret); err != nil {
+	if err := a.checkConnection(agent, s.secret); err != nil {
 		a.fail(agent, err, "connection-test-failed", s.ticket)
 		return
 	}
@@ -1284,7 +1280,7 @@ func (a *App) recheck(agent string) {
 		a.current = session{agent: agent, secret: secret}
 	}
 	a.mu.Unlock()
-	if err := a.check(secret); err != nil {
+	if err := a.checkConnection(agent, secret); err != nil {
 		a.fail(agent, err, "connection-test-failed", "")
 		return
 	}
@@ -1354,12 +1350,10 @@ func (a *App) refreshStatus(withBalance bool) {
 		secret, configured := a.env.Configured(ag, a.origin)
 		st.Installed, st.Configured, st.Running = a.env.FindCLI(ag), configured, a.env.Running(ag)
 		switch {
-		case !a.env.FindCLI(ag) && !configured:
+		case !st.Installed:
 			st.State, st.Badge, st.Button, st.Action = "nocli", badgeNoCLI, "帮我装上", "install-cli"
 		case !configured:
 			st.State, st.Badge, st.Button, st.Action = "none", badgeUnconnected, "帮我接上 "+n, "connect"
-		case !a.env.FindCLI(ag):
-			st.State, st.Badge, st.Button, st.Action = "nocli", badgeNoCLI, "帮我装上", "install-cli"
 		default:
 			// one call per assistant: balance + tier + stopped/expired (boss: on open + manual refresh)
 			b, m, tier, tiers, cs := a.fetchBalanceAndTier(secret)
@@ -1393,6 +1387,9 @@ func (a *App) refreshStatus(withBalance bool) {
 					st.State = "offline"
 				}
 			}
+		}
+		if a.desktop {
+			a.applyDesktopCheck(&st, secret)
 		}
 		out = append(out, st)
 	}
@@ -1488,8 +1485,11 @@ func reasonText(code string) string {
 // supportReport is the text the user pastes into QQ (no password, no key).
 func (a *App) supportReport() string {
 	a.mu.Lock()
-	defer a.mu.Unlock()
-	report := "你好，我在用「接上AI」时遇到了问题。\n\n" + strings.Join(a.diagLocked(), "\n")
+	diag := a.diagLocked()
+	a.mu.Unlock()
+	// Installer logs live on disk; collecting them must not hold the lock
+	// needed by cancellation, progress and the rest of the desktop state.
+	report := "你好，我在用「接上AI」时遇到了问题。\n\n" + strings.Join(diag, "\n")
 	if a.env.InstallDiagnostics != nil {
 		report += "\n\n安装诊断（不含密钥）：\n" + a.env.InstallDiagnostics("claude") + "\n" + a.env.InstallDiagnostics("codex")
 	}

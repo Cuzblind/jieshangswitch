@@ -43,8 +43,10 @@ export type Action =
   | "mcp-disable"
   | "mcp-delete"
   | "skills-list"
+  | "skills-catalog-load"
   | "skill-import"
   | "skill-import-zip"
+  | "skill-install-remote"
   | "skill-enable"
   | "skill-disable"
   | "skill-delete";
@@ -81,6 +83,42 @@ export interface Skill {
   conflict?: boolean;
   // Why an unmanaged folder cannot be taken under management.
   unsupported?: string;
+}
+export interface RemoteSkillCategory {
+  id: string;
+  label: string;
+}
+export interface RemoteSkillEntitlement {
+  authenticated: boolean;
+  paid_fen: number;
+  threshold_fen: number;
+  is_team_member: boolean;
+  premium_unlocked: boolean;
+}
+export interface RemoteSkillItem {
+  id: number;
+  slug: string;
+  title: string;
+  category: string;
+  tier: "free" | "premium" | string;
+  summary: string;
+  supported_agents: string[];
+  install_command?: string;
+  has_install_command?: boolean;
+  has_zip: boolean;
+  zip_size_bytes: number;
+  zip_sha256: string;
+  has_preset: boolean;
+  unlocked: boolean;
+  install_count?: number;
+  sort_order: number;
+  created_at?: number;
+  updated_at: number;
+}
+export interface RemoteSkillsCatalog {
+  categories: RemoteSkillCategory[];
+  items: RemoteSkillItem[];
+  entitlement: RemoteSkillEntitlement;
 }
 export type McpInput = Pick<McpServer, "id" | "name" | "type" | "command" | "args" | "env" | "cwd" | "url" | "headers">;
 export interface View {
@@ -182,6 +220,7 @@ export interface DesktopState {
   recentDirs?: string[];
   today?: TodayUsageSummary;
   usage?: UsageSnapshot;
+  walletEpoch?: number;
   catalogs?: Partial<Record<Agent, CatalogSnapshot>>;
   engineReady?: boolean;
   engineError?: string;
@@ -215,6 +254,19 @@ export interface DesktopState {
   prompts?: Partial<Record<Agent, Prompt[]>>;
   mcp?: Partial<Record<Agent, McpServer[]>>;
   skills?: Partial<Record<Agent, Skill[]>>;
+  skillCatalog?: RemoteSkillsCatalog;
+}
+
+// Display labels alone are not an identity: two teams or rotated connections
+// can have the same label. The engine generation contains no credential data.
+export function desktopWalletIdentity(state?: DesktopState): string {
+  return JSON.stringify([
+    state?.walletEpoch ?? 0,
+    state?.workspace?.kind ?? "",
+    state?.workspace?.teamId ?? 0,
+    state?.workspace?.label ?? "",
+    state?.accountLabel ?? "",
+  ]);
 }
 export const desktopState = () => invoke<DesktopState>("desktop_state");
 export const desktopAction = (action: Action, agent?: Agent, confirm = false) =>
@@ -260,6 +312,9 @@ export const desktopSkillAction = (
   agent: Agent,
   dir = "",
 ) => invoke<DesktopState>("desktop_action", { action, agent, confirm: false, skillDir: dir });
+
+export const desktopSkillsCatalog = (agent?: Agent) =>
+  invoke<DesktopState>("desktop_action", { action: "skills-catalog-load", agent, confirm: false });
 
 export const desktopSwitchTier = (agent: Agent, tier: string) =>
   invoke<DesktopState>("desktop_action", { action: "switch-tier", agent, confirm: false, tier });

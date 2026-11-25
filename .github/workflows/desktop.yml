@@ -7,11 +7,20 @@ on:
         description: Include complete offline CLI and GUI resources (large download)
         type: boolean
         default: false
+      notes:
+        description: Release notes shown in the in-app updater dialog (updates/stable/latest.json)
+        type: string
+        default: ''
+      publish_to_server:
+        description: Also rsync signed client-dist to production server (requires DEPLOY_SSH_KEY / DEPLOY_HOST secrets)
+        type: boolean
+        default: false
   pull_request:
-    paths: ['client/**', 'install/**', 'web-app/src/lib/shared-copy.json', '.github/workflows/desktop.yml']
+    paths: ['client/**', 'install/**', 'web-app/src/lib/shared-copy.json', 'scripts/bump-client-version.mjs', 'scripts/publish-client-dist.mjs', '.github/workflows/desktop.yml']
   push:
     branches: [main]
-    paths: ['client/**', 'install/**', 'web-app/src/lib/shared-copy.json', '.github/workflows/desktop.yml']
+    tags: ['client-v*']
+    paths: ['client/**', 'install/**', 'web-app/src/lib/shared-copy.json', 'scripts/bump-client-version.mjs', 'scripts/publish-client-dist.mjs', '.github/workflows/desktop.yml']
 
 permissions:
   contents: read
@@ -21,7 +30,45 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  renderer:
+    # Source snapshots pushed to the public client repository build all four
+    # installers. Private main has its own scoped CI and builds on dispatch or client-v* tags.
+    if: github.event_name != 'push' || github.ref_type == 'tag' || github.repository != 'Cuzblind/jieshangai'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: client/desktop
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320
+        with:
+          package_json_file: client/desktop/package.json
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: client/desktop/pnpm-lock.yaml
+      - name: Verify synced client version files
+        working-directory: .
+        run: |
+          if [ -f scripts/bump-client-version.mjs ]; then
+            node scripts/bump-client-version.mjs --check
+          fi
+          if [ "${{ github.ref_type }}" = "tag" ]; then
+            ver=$(node -p "require('./client/desktop/package.json').version")
+            if [ "${{ github.ref_name }}" != "client-v${ver}" ]; then
+              echo "Tag ${{ github.ref_name }} does not match client version client-v${ver}" >&2
+              exit 1
+            fi
+          fi
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm verify:source
+      - run: pnpm typecheck
+      - run: pnpm test
+
   desktop:
+    needs: renderer
     strategy:
       fail-fast: false
       matrix:
@@ -66,18 +113,21 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+        with:
+          workspaces: client/desktop/src-tauri
+          key: ${{ matrix.target }}
+          cache-bin: false
       - name: Install frontend dependencies
         run: pnpm install --frozen-lockfile
-      - name: Verify source provenance
-        run: pnpm verify:source
-      - name: Typecheck and test renderer
-        run: pnpm typecheck && pnpm test
       - name: Test configuration core
         working-directory: client/core
         run: go test ./...
       - name: Test shared runtime
         working-directory: client/runtime
-        run: go test -timeout 25m ./...
+        # Retain per-test durations on each native runner. A single package
+        # time hid which Windows ARM cases consumed the release window.
+        run: go test -v -timeout 25m ./...
       - name: End-to-end real engine smoke test
         run: pnpm smoke:engine
       - name: Build sidecar
@@ -118,3 +168,101 @@ jobs:
           path: client/desktop/artifacts/*
           if-no-files-found: error
 
+  package-release:
+    needs: desktop
+    if: github.event_name == 'workflow_dispatch' || github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: jieshangai-*
+          path: release-artifacts
+      - name: Assemble client-dist and latest.json
+        id: assemble
+        env:
+          RELEASE_NOTES: ${{ inputs.notes }}
+        run: |
+          VERSION=$(node -p "require('./client/desktop/package.json').version")
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          SIG_COUNT=$(find release-artifacts -name '*.sig' | wc -l | tr -d ' ')
+          if [ "$SIG_COUNT" -ge 4 ]; then
+            NOTES="${RELEASE_NOTES:-接上AI v${VERSION} 功能与稳定性更新}"
+            node scripts/publish-client-dist.mjs \
+              --version "$VERSION" \
+              --origin https://jieshangai.com \
+              --in ./release-artifacts \
+              --out ./client-dist \
+              --notes "$NOTES"
+            echo "signed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "signed=false" >> "$GITHUB_OUTPUT"
+            mkdir -p ./client-dist/downloads
+            find release-artifacts -type f \( -name '*.exe' -o -name '*.dmg' -o -name 'SHA256SUMS.txt' \) -exec cp {} ./client-dist/downloads/ \;
+            echo "::warning::TAURI_SIGNING_PRIVATE_KEY was not set (found ${SIG_COUNT} .sig files); skipped latest.json generation."
+          fi
+      - uses: actions/upload-artifact@v7
+        with:
+          name: jieshangai-client-dist-${{ steps.assemble.outputs.version }}
+          path: client-dist/
+          if-no-files-found: error
+      - name: Sync signed client-dist to production server (optional)
+        id: deploy
+        if: steps.assemble.outputs.signed == 'true' && (inputs.publish_to_server == true || github.ref_type == 'tag')
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
+          DEPLOY_CLIENT_DIST_PATH: ${{ secrets.DEPLOY_CLIENT_DIST_PATH }}
+          DEPLOY_SSH_KNOWN_HOSTS: ${{ secrets.DEPLOY_SSH_KNOWN_HOSTS }}
+          VERSION: ${{ steps.assemble.outputs.version }}
+        run: |
+          if [ -z "$DEPLOY_SSH_KEY" ] || [ -z "$DEPLOY_HOST" ] || [ -z "$DEPLOY_CLIENT_DIST_PATH" ]; then
+            echo "deployed=false" >> "$GITHUB_OUTPUT"
+            echo "Skipping server sync: configure DEPLOY_SSH_KEY, DEPLOY_HOST, DEPLOY_CLIENT_DIST_PATH secrets to enable auto-publish."
+            exit 0
+          fi
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          SSH_PORT="${DEPLOY_PORT:-22}"
+          SSH_USER="${DEPLOY_USER:-root}"
+          if [ -n "$DEPLOY_SSH_KNOWN_HOSTS" ]; then
+            printf '%s\n' "$DEPLOY_SSH_KNOWN_HOSTS" > ~/.ssh/known_hosts
+            chmod 644 ~/.ssh/known_hosts
+            SSH_OPTS="-i ~/.ssh/deploy_key -p ${SSH_PORT} -o StrictHostKeyChecking=yes"
+          else
+            SSH_OPTS="-i ~/.ssh/deploy_key -p ${SSH_PORT} -o StrictHostKeyChecking=accept-new"
+          fi
+          # Upload payloads first, then latest.json last so clients never see a manifest pointing to missing files.
+          rsync -az --exclude 'updates/stable/latest.json' -e "ssh ${SSH_OPTS}" ./client-dist/ "${SSH_USER}@${DEPLOY_HOST}:${DEPLOY_CLIENT_DIST_PATH%/}/"
+          rsync -az -e "ssh ${SSH_OPTS}" ./client-dist/updates/stable/latest.json "${SSH_USER}@${DEPLOY_HOST}:${DEPLOY_CLIENT_DIST_PATH%/}/updates/stable/latest.json"
+          LIVE_VER=$(curl -fsSL "https://jieshangai.com/client-dist/updates/stable/latest.json" | node -e "const d=JSON.parse(require('fs').readFileSync(0,'utf8')); console.log(d.version||'')")
+          if [ "$LIVE_VER" != "$VERSION" ]; then
+            echo "Live latest.json version mismatch: expected ${VERSION}, got ${LIVE_VER}" >&2
+            exit 1
+          fi
+          echo "deployed=true" >> "$GITHUB_OUTPUT"
+      - name: Write release summary
+        run: |
+          {
+            echo "## 接上AI Desktop v${{ steps.assemble.outputs.version }}"
+            if [ "${{ steps.assemble.outputs.signed }}" = "true" ]; then
+              echo "- Updater manifest: generated (\`updates/stable/latest.json\` for all 4 platforms)"
+              echo "- Bundle artifact: \`jieshangai-client-dist-${{ steps.assemble.outputs.version }}\`"
+              if [ "${{ steps.deploy.outputs.deployed }}" = "true" ]; then
+                echo "- Server sync: **Published & verified live** at \`https://jieshangai.com/client-dist/updates/stable/latest.json\`"
+              else
+                echo "- Server sync: Not auto-synced (download \`jieshangai-client-dist-${{ steps.assemble.outputs.version }}\` and upload to \`deploy/client-dist/\`, or configure \`DEPLOY_SSH_KEY\` / \`DEPLOY_HOST\` / \`DEPLOY_CLIENT_DIST_PATH\`)"
+              fi
+            else
+              echo "- Updater manifest: **Skipped** (\`TAURI_SIGNING_PRIVATE_KEY\` secret is not configured)"
+              echo "- Installers collected in artifact \`jieshangai-client-dist-${{ steps.assemble.outputs.version }}\`"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -1,6 +1,6 @@
 [package]
 name = "jieshangai"
-version = "0.2.0-beta.11"
+version = "0.2.0-beta.12"
 description = "接上AI · Claude Code 与 Codex 接入助手"
 authors = ["接上AI", "Jason Young (CC Switch)"]
 license = "MIT"

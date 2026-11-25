@@ -1,6 +1,8 @@
 package clientruntime
 
 import (
+	"errors"
+	"net/http"
 	"net/http/httptest"
 	"sync"
 	"sync/atomic"
@@ -93,5 +95,77 @@ func TestInspectProbesBothAssistantsTogether(t *testing.T) {
 	m.inspect()
 	if together.Load() != 2 {
 		t.Fatal("assistants were inspected one after another")
+	}
+}
+
+// A check belongs to the credential it tested; replacing the local connection
+// must not let its old failure mask a healthy wallet on a later desktop action.
+func TestDesktopRefreshUsesCurrentConnectionAndLogin(t *testing.T) {
+	checkStarted, releaseCheck := make(chan struct{}), make(chan struct{})
+	g := &fakeGW{models: 200}
+	base := g.handler()
+	gw := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/models" && r.Header.Get("Authorization") != "Bearer "+fakeKey {
+			close(checkStarted)
+			<-releaseCheck
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		base.ServeHTTP(w, r)
+	}))
+	defer gw.Close()
+	a, _ := testDesktopApp(t, gw)
+	if err := a.env.Write("claude", gw.URL, "expired-test-key"); err != nil {
+		t.Fatal(err)
+	}
+	checked := make(chan error, 1)
+	go func() { checked <- a.checkConnection("claude", a.secretFor("claude")) }()
+	<-checkStarted
+	// Simulate replacing settings while the old HTTP check is still in flight.
+	writeErr := a.env.Write("claude", gw.URL, fakeKey)
+	close(releaseCheck)
+	if writeErr != nil {
+		t.Fatal(writeErr)
+	}
+	if err := <-checked; !errors.Is(err, errExpired) {
+		t.Fatalf("old connection check = %v", err)
+	}
+	a.desktopRefresh()
+	if st := a.DesktopState().Statuses[0]; st.State != "ok" || st.Action != "restore" || st.Button == "" {
+		t.Fatalf("old check replaced current connection: %+v", st)
+	}
+
+	loggedIn := true
+	a.env.OfficialLogin = func(string) bool { return loggedIn }
+	if err := a.checkConnection("claude", a.secretFor("claude")); err != nil {
+		t.Fatal(err)
+	}
+	a.desktopRefresh()
+	if st := a.DesktopState().Statuses[0]; st.State != "conflict" || st.Action != "fix" {
+		t.Fatalf("official login conflict lost: %+v", st)
+	}
+	loggedIn = false // the user exits the official account outside this app
+	a.desktopRefresh()
+	if st := a.DesktopState().Statuses[0]; st.State != "ok" || st.Action != "restore" || st.Button == "" {
+		t.Fatalf("stale login or partial card replaced live state: %+v", st)
+	}
+}
+
+// CLI installation can finish between probes. A card must use one sampled
+// installation fact for both its fields and its badge.
+func TestRefreshSamplesCLIOncePerAssistant(t *testing.T) {
+	gw := httptest.NewServer((&fakeGW{models: 200}).handler())
+	defer gw.Close()
+	a, _ := testDesktopApp(t, gw)
+	calls := map[string]int{}
+	a.env.FindCLI = func(agent string) bool {
+		calls[agent]++
+		return calls[agent] > 1
+	}
+	a.desktopRefresh()
+	for _, st := range a.DesktopState().Statuses {
+		if calls[st.Agent] != 1 || st.Installed || st.State != "nocli" {
+			t.Fatalf("CLI facts sampled inconsistently (%d calls): %+v", calls[st.Agent], st)
+		}
 	}
 }

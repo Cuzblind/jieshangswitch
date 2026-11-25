@@ -15,7 +15,7 @@ import type { Agent, Prompt, PromptArgs } from "@/lib/desktop";
 type Run = (
   action: "prompt-save" | "prompt-enable" | "prompt-delete",
   args: PromptArgs,
-) => Promise<void> | void;
+) => Promise<boolean>;
 
 // Prompts are local files projected into CLAUDE.md / AGENTS.md by the engine.
 export function PromptsPanel({
@@ -39,8 +39,7 @@ export function PromptsPanel({
     setContent(p?.content ?? "");
   };
   const save = async () => {
-    await run("prompt-save", { promptId: editing || undefined, name, content });
-    setEditing(null);
+    if (await run("prompt-save", { promptId: editing || undefined, name, content })) setEditing(null);
   };
 
   return (
@@ -134,6 +133,7 @@ export function PromptsPanel({
                 aria-label="提示词名称"
                 value={name}
                 maxLength={80}
+                disabled={busy}
                 onChange={(e) => setName(e.target.value)}
               />
             </Field>
@@ -144,11 +144,12 @@ export function PromptsPanel({
                 aria-label="提示词内容"
                 value={content}
                 rows={9}
+                disabled={busy}
                 onChange={(e) => setContent(e.target.value)}
               />
             </Field>
             <div className="flex items-center justify-end gap-2 pt-1">
-              <Button variant="ghost" onClick={() => setEditing(null)}>
+              <Button variant="ghost" disabled={busy} onClick={() => setEditing(null)}>
                 取消
               </Button>
               <Button variant="primary" disabled={busy || !name.trim()} onClick={() => void save()}>

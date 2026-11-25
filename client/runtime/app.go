@@ -120,12 +120,13 @@ type App struct {
 	appVersion    string
 	current       session
 	desktop       bool
-	desktopStates map[string]AgentStatus
+	desktopChecks map[string]desktopConnectionCheck
 	seenTickets   map[string]bool
 	installMu     sync.Mutex
 	installations map[string]*desktopInstallation
 	updateMu      sync.Mutex
 	toolUpdates   UpdateCheckState
+	connectionMu  sync.Mutex // config writes/restores and admission of remote data; never held during HTTP
 
 	mu               sync.Mutex
 	secret           string
@@ -136,11 +137,15 @@ type App struct {
 	walletAgent      string
 	walletKey        string
 	walletEpoch      uint64
+	usageRequest     uint64
+	catalogRequests  map[string]uint64
+	skillCatalogReq  uint64
 	accountLabel     string
 	workspace        *WorkspaceInfo
 	today            *TodayUsageSummary
 	usage            *UsageSnapshot
 	catalogs         map[string]*DesktopCatalogPayload
+	skillCatalog     *RemoteSkillsCatalog
 	last             struct{ check, reason string }
 	retries          map[string]int
 	ticket           string // pending ticket for retry (never shown)
@@ -157,7 +162,7 @@ func randHex(n int) string {
 }
 
 func newApp(env Env) *App {
-	a := &App{appVersion: version, desktopStates: make(map[string]AgentStatus), seenTickets: make(map[string]bool), secret: randHex(16), origin: env.Origin, env: env, retries: map[string]int{}}
+	a := &App{appVersion: version, desktopChecks: make(map[string]desktopConnectionCheck), seenTickets: make(map[string]bool), secret: randHex(16), origin: env.Origin, env: env, retries: map[string]int{}}
 	a.view = View{Screen: "home"}
 	return a
 }

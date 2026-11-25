@@ -1,4 +1,4 @@
-import { render, screen, within } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import App from "./App";
@@ -46,6 +46,8 @@ beforeEach(() => {
     prompts: { claude: [{ id: "p-1", name: "论文写作", content: "学术语气", enabled: false, updatedAt: "" }] },
   });
   localStorage.clear();
+  localStorage.setItem("jieshangai:tool-update-check", String(Date.now()));
+  localStorage.setItem("jieshangai:client-update-check", String(Date.now()));
 });
 
 describe("prompts page", () => {
@@ -68,5 +70,33 @@ describe("prompts page", () => {
     render(<App />);
     await userEvent.click(await screen.findByRole("button", { name: "提示词" }));
     expect(await screen.findByRole("alert")).toHaveTextContent("没能写入助手的提示词文件");
+  });
+
+  it.each(["page", "assistant"])("ignores a late list error after changing %s", async (change) => {
+    let reject!: (reason: string) => void;
+    api.prompt.mockReturnValueOnce(new Promise((_, fail) => { reject = fail; }));
+    render(<App />);
+    await userEvent.click(await screen.findByRole("button", { name: "提示词" }));
+    await userEvent.click(screen.getByRole("button", { name: change === "page" ? "设置" : "Codex" }));
+    await act(async () => { reject("旧助手读取失败"); });
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
+  it("keeps a failed prompt draft for retry and closes it only after a successful save", async () => {
+    render(<App />);
+    await userEvent.click(await screen.findByRole("button", { name: "提示词" }));
+    await screen.findByText("论文写作");
+    await userEvent.click(screen.getByRole("button", { name: "新建提示词" }));
+    expect(screen.getByRole("button", { name: "保存" })).toBeDisabled();
+    await userEvent.type(screen.getByLabelText("提示词名称"), "写作");
+    await userEvent.type(screen.getByLabelText("提示词内容"), "简洁");
+    api.prompt.mockRejectedValueOnce("磁盘暂时无法写入");
+    await userEvent.click(screen.getByRole("button", { name: "保存" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("磁盘暂时无法写入");
+    expect(screen.getByLabelText("提示词名称")).toHaveValue("写作");
+    expect(screen.getByLabelText("提示词内容")).toHaveValue("简洁");
+    await userEvent.click(screen.getByRole("button", { name: "保存" }));
+    await waitFor(() => expect(screen.queryByLabelText("提示词内容")).not.toBeInTheDocument());
+    expect(api.prompt).toHaveBeenLastCalledWith("prompt-save", "claude", { promptId: undefined, name: "写作", content: "简洁" });
   });
 });

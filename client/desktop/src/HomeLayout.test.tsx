@@ -60,11 +60,15 @@ beforeEach(() => {
 
 describe("home layout", () => {
   it("promotes desktop install as the primary action while keeping CLI usable", async () => {
-    api.state.mockResolvedValue(fixture({ tools: [tool({ guiInstalled: false, guiVersion: undefined })] }));
+    const missingGUI = fixture({ tools: [tool({ guiInstalled: false, guiVersion: undefined })] });
+    api.state.mockResolvedValue(missingGUI);
+    api.action.mockResolvedValue(missingGUI);
     render(<App />);
     const claude = await screen.findByRole("article", { name: "Claude Code" });
-    const installBtn = within(claude).getByRole("button", { name: "安装桌面版 · Claude Code" });
+    const installBtn = await within(claude).findByRole("button", { name: "安装桌面版 · Claude Code" });
     expect(installBtn).toHaveClass("primary");
+    await userEvent.click(within(claude).getByRole("button", { name: "打开命令行 · Claude Code" }));
+    expect(api.action).toHaveBeenCalledWith("launch", "claude", false);
     await userEvent.click(installBtn);
     expect(api.action).toHaveBeenCalledWith("install-suite", "claude", false);
     expect(within(claude).getByRole("button", { name: "打开命令行 · Claude Code" })).toBeEnabled();
@@ -74,6 +78,7 @@ describe("home layout", () => {
   it("shows repair only for an assistant with a problem, once", async () => {
     api.state.mockResolvedValue(fixture());
     render(<App />);
+    await screen.findByRole("button", { name: "一键修复 · Codex" });
     const claude = await screen.findByRole("article", { name: "Claude Code" });
     expect(names(claude).some((n) => n.includes("一键修复"))).toBe(false);
     const codex = screen.getByRole("article", { name: "Codex" });
@@ -83,6 +88,7 @@ describe("home layout", () => {
   it("opens the desktop app as the primary left action and keeps CLI on the right", async () => {
     api.state.mockResolvedValue(fixture());
     render(<App />);
+    await screen.findByRole("button", { name: "打开桌面版 · Claude Code" });
     const claude = await screen.findByRole("article", { name: "Claude Code" });
     const list = names(claude);
     expect(list.indexOf("打开桌面版 · Claude Code")).toBeGreaterThanOrEqual(0);
@@ -132,6 +138,7 @@ describe("home layout", () => {
       }),
     );
     render(<App />);
+    await screen.findByRole("button", { name: "安装应用 · Claude Code" });
     const claude = await screen.findByRole("article", { name: "Claude Code" });
     const codex = screen.getByRole("article", { name: "Codex" });
     expect(within(claude).getByText("推荐先装")).toBeInTheDocument();

@@ -1,10 +1,12 @@
 package clientruntime
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/url"
 	"os"
@@ -245,14 +247,17 @@ func (m *toolManager) componentError(agent, kind string, err error) {
 }
 
 // Output is bounded and scrubbed before being retained locally. Never persist env.
+var installSecretPattern = regexp.MustCompile(`(?i)(bearer\s+|(?:api[_-]?key|token|secret|password)[=: ]+)[^\s,;"']+`)
+var installURLPattern = regexp.MustCompile(`https?://[^\s"'<>]+`)
+
 func redactInstallText(s string) string {
 	for _, prefix := range []string{homeDir(), os.Getenv("USERPROFILE")} {
 		if prefix != "" {
 			s = strings.ReplaceAll(s, prefix, "<USER>")
 		}
 	}
-	s = regexp.MustCompile(`(?i)(bearer\s+|(?:api[_-]?key|token|secret|password)[=: ]+)[^\s,;"']+`).ReplaceAllString(s, "${1}<REDACTED>")
-	s = regexp.MustCompile(`https?://[^\s"'<>]+`).ReplaceAllStringFunc(s, func(raw string) string {
+	s = installSecretPattern.ReplaceAllString(s, "${1}<REDACTED>")
+	s = installURLPattern.ReplaceAllStringFunc(s, func(raw string) string {
 		u, e := url.Parse(raw)
 		if e != nil {
 			return "<URL>"
@@ -291,13 +296,30 @@ func (m *toolManager) diagnostic(agent, component, stage, source, output string,
 		_ = f.Close()
 	}
 }
-func (m *toolManager) diagnostics(agent string) string {
-	data, _ := os.ReadFile(filepath.Join(m.root, "diagnostics", agent+".jsonl"))
-	if len(data) > 16000 {
-		data = data[len(data)-16000:]
-		if i := strings.IndexByte(string(data), '\n'); i >= 0 {
-			data = data[i+1:]
+
+// Read only the tail we actually publish. Desktop snapshots request this five
+// times a second, so reading a full rotating log wastes MB/s while idle.
+func readDiagnosticTail(r io.ReaderAt, size int64) []byte {
+	start := max(int64(0), size-16000)
+	data, _ := io.ReadAll(io.NewSectionReader(r, start, size-start))
+	if start > 0 {
+		// The first retained byte may be in the middle of a JSON record or
+		// UTF-8 character. Keep complete records, as with the previous tail.
+		if i := bytes.IndexByte(data, '\n'); i >= 0 {
+			return data[i+1:]
 		}
+		return nil
+	}
+	return data
+}
+
+func (m *toolManager) diagnostics(agent string) string {
+	var data []byte
+	if f, err := os.Open(filepath.Join(m.root, "diagnostics", agent+".jsonl")); err == nil {
+		if st, err := f.Stat(); err == nil {
+			data = readDiagnosticTail(f, st.Size())
+		}
+		_ = f.Close()
 	}
 	statuses := m.snapshot()
 	report, _ := json.MarshalIndent(map[string]any{"agent": agent, "os": m.goos, "arch": m.arch, "components": statuses, "log": string(data)}, "", "  ")

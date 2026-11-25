@@ -120,36 +120,17 @@ describe("home screen stability", () => {
       render(<App />);
       await userEvent.click(await screen.findByRole("button", { name: "检查连接 · Claude Code" }));
       expect(await screen.findByText("连接检查通过。")).toBeInTheDocument();
+      expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
       await act(async () => {
-        vi.advanceTimersByTime(3500);
+        vi.advanceTimersByTime(4500);
       });
       await waitFor(() => expect(screen.queryByText("连接检查通过。")).not.toBeInTheDocument());
       await userEvent.click(screen.getByRole("button", { name: "检查连接 · Claude Code" }));
       expect(await screen.findByText("连接检查通过。")).toBeInTheDocument();
       await act(async () => {
-        vi.advanceTimersByTime(3500);
+        vi.advanceTimersByTime(4500);
       });
       await waitFor(() => expect(screen.queryByText("连接检查通过。")).not.toBeInTheDocument());
-    } finally {
-      vi.useRealTimers();
-    }
-  });
-
-  it("shows a success notice as a toast that goes away by itself", async () => {
-    vi.useFakeTimers({ shouldAdvanceTime: true });
-    try {
-      api.state.mockResolvedValue(
-        fixture({ view: { screen: "home", notice: "已请求打开官方桌面版，请在新窗口中继续。" } }),
-      );
-      render(<App />);
-      expect(await screen.findByText("已请求打开官方桌面版，请在新窗口中继续。")).toBeInTheDocument();
-      expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
-      await act(async () => {
-        vi.advanceTimersByTime(3500);
-      });
-      await waitFor(() =>
-        expect(screen.queryByText("已请求打开官方桌面版，请在新窗口中继续。")).not.toBeInTheDocument(),
-      );
     } finally {
       vi.useRealTimers();
     }
