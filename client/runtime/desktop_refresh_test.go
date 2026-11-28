@@ -115,18 +115,22 @@ func TestDesktopRefreshUsesCurrentConnectionAndLogin(t *testing.T) {
 	}))
 	defer gw.Close()
 	a, _ := testDesktopApp(t, gw)
-	if err := a.env.Write("claude", gw.URL, "expired-test-key"); err != nil {
-		t.Fatal(err)
+	// This test controls when the local credential changes. Running the Windows
+	// installer here would hold the old HTTP response open during PowerShell setup.
+	secret := "expired-test-key"
+	a.env.Configured = func(agent, origin string) (string, bool) {
+		if agent == "claude" && origin == gw.URL {
+			return secret, true
+		}
+		return "", false
 	}
 	checked := make(chan error, 1)
-	go func() { checked <- a.checkConnection("claude", a.secretFor("claude")) }()
+	oldSecret := a.secretFor("claude")
+	go func() { checked <- a.checkConnection("claude", oldSecret) }()
 	<-checkStarted
 	// Simulate replacing settings while the old HTTP check is still in flight.
-	writeErr := a.env.Write("claude", gw.URL, fakeKey)
+	secret = fakeKey
 	close(releaseCheck)
-	if writeErr != nil {
-		t.Fatal(writeErr)
-	}
 	if err := <-checked; !errors.Is(err, errExpired) {
 		t.Fatalf("old connection check = %v", err)
 	}

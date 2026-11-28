@@ -283,10 +283,12 @@ mod tests {
         assert!(action.picks_skill_zip());
         let other: Action = serde_json::from_value(serde_json::json!("skill-import")).unwrap();
         assert!(!other.picks_skill_zip());
-        let catalog: Action = serde_json::from_value(serde_json::json!("skills-catalog-load")).unwrap();
+        let catalog: Action =
+            serde_json::from_value(serde_json::json!("skills-catalog-load")).unwrap();
         assert_eq!(catalog.name(), "skills-catalog-load");
         assert!(!catalog.requires_agent());
-        let remote: Action = serde_json::from_value(serde_json::json!("skill-install-remote")).unwrap();
+        let remote: Action =
+            serde_json::from_value(serde_json::json!("skill-install-remote")).unwrap();
         assert_eq!(remote.name(), "skill-install-remote");
         assert!(remote.requires_agent());
         assert!(!remote.picks_skill_zip());
