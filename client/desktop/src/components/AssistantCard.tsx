@@ -202,6 +202,8 @@ export function AssistantCard({
   act,
   cancelInstall,
   onSwitchTier,
+  onSelectModel,
+  onOpenModels,
 }: {
   agent: Agent;
   name: string;
@@ -215,10 +217,13 @@ export function AssistantCard({
   act: (action: Action, agent?: Agent) => void;
   cancelInstall: (agent?: Agent) => void;
   onSwitchTier?: (agent: Agent, tier: string) => void;
+  onSelectModel?: (agent: Agent, opts: { model?: string; mode?: "native" | "cn" }) => void;
+  onOpenModels?: (agent: Agent) => void;
 }) {
   const s = state?.statuses?.find((item) => item.agent === agent);
   const tool = state?.tools?.find((item) => item.agent === agent);
   const task = state?.installTasks?.find((item) => item.agent === agent);
+  const catalog = state?.catalogs?.[agent];
   const checking = tool?.inspected === false;
   // The desktop-app check finishes seconds after the CLI one.
   const guiChecking = checking || tool?.guiInspected === false;
@@ -386,6 +391,148 @@ export function AssistantCard({
                 disabled={off || !!task?.busy || disabled}
                 onSwitchTier={onSwitchTier}
               />
+            )}
+
+            {ready && agent === "claude" && catalog?.enabled && onSelectModel && (() => {
+              const cnAlts = catalog.cn_alternatives ?? [];
+              const activeModel = catalog.active_model || catalog.default_model;
+              const isCn = catalog.claude_mode === "cn";
+              if (cnAlts.length > 0) {
+                const defaultCn = cnAlts[0].id;
+                return (
+                  <div
+                    data-claude-mode-switcher
+                    className="flex flex-col gap-1.5 rounded-lg bg-surface-2 px-3 py-2.5 ring-1 ring-border/70"
+                  >
+                    <div className="flex items-center justify-between gap-2">
+                      <span className={cn(typeClass("caption"), "text-muted-foreground")}>模型模式</span>
+                      {activeModel && (
+                        <span className={cn(typeClass("micro"), "truncate font-mono text-muted-foreground")}>
+                          {activeModel}
+                        </span>
+                      )}
+                    </div>
+                    <div
+                      role="group"
+                      aria-label="Claude Code 模型模式"
+                      className="flex items-center gap-0.5 rounded-lg bg-background p-0.5 ring-1 ring-border/70"
+                    >
+                      <button
+                        type="button"
+                        aria-pressed={!isCn}
+                        disabled={off || !!task?.busy || disabled}
+                        onClick={() => {
+                          if (isCn) onSelectModel("claude", { mode: "native" });
+                        }}
+                        className={cn(
+                          "flex h-7 flex-1 items-center justify-center rounded-md px-2 whitespace-nowrap transition-colors duration-80 disabled:opacity-50",
+                          typeClass("caption"),
+                          !isCn ? "bg-active text-foreground" : "text-muted-foreground hover:text-foreground",
+                        )}
+                        style={{ fontVariationSettings: !isCn ? fontWeights.semibold : fontWeights.normal }}
+                      >
+                        原版 Claude
+                      </button>
+                      <button
+                        type="button"
+                        aria-pressed={isCn}
+                        disabled={off || !!task?.busy || disabled}
+                        onClick={() => {
+                          if (!isCn) onSelectModel("claude", { mode: "cn", model: defaultCn });
+                        }}
+                        className={cn(
+                          "flex h-7 flex-1 items-center justify-center rounded-md px-2 whitespace-nowrap transition-colors duration-80 disabled:opacity-50",
+                          typeClass("caption"),
+                          isCn ? "bg-active text-foreground" : "text-muted-foreground hover:text-foreground",
+                        )}
+                        style={{ fontVariationSettings: isCn ? fontWeights.semibold : fontWeights.normal }}
+                      >
+                        国产省钱
+                      </button>
+                    </div>
+                    <p className={cn(typeClass("micro"), "m-0 text-muted-foreground")}>
+                      {isCn
+                        ? `四槽位已统一走 ${activeModel}，更省钱且后台子任务不报错`
+                        : "已自动同步本档最新 Sonnet / Opus / Haiku 三档"}
+                    </p>
+                    {isCn && cnAlts.length > 1 && (
+                      <div className="flex flex-wrap items-center gap-1 pt-0.5" aria-label="选择国产平替模型">
+                        {cnAlts.slice(0, 4).map((alt) => {
+                          const picked = alt.id === activeModel;
+                          return (
+                            <button
+                              key={alt.id}
+                              type="button"
+                              aria-pressed={picked}
+                              disabled={off || !!task?.busy || disabled}
+                              onClick={() => {
+                                if (!picked) onSelectModel("claude", { mode: "cn", model: alt.id });
+                              }}
+                              className={cn(
+                                "rounded-md border px-2 py-0.5 font-mono transition-colors disabled:opacity-50",
+                                typeClass("micro"),
+                                picked
+                                  ? "border-primary/40 bg-active text-foreground"
+                                  : "border-border bg-background text-muted-foreground hover:text-foreground",
+                              )}
+                            >
+                              {alt.id}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+                );
+              }
+              if (!activeModel) return null;
+              return (
+                <div className="flex flex-col gap-1.5 rounded-lg bg-surface-2 px-3 py-2.5 ring-1 ring-border/70">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className={cn(typeClass("caption"), "text-muted-foreground")}>当前主力</span>
+                    {onOpenModels && (
+                      <button
+                        type="button"
+                        disabled={off || !!task?.busy || disabled}
+                        onClick={() => onOpenModels("claude")}
+                        className={cn(typeClass("micro"), "text-muted-foreground hover:text-foreground disabled:opacity-50")}
+                      >
+                        换模型 →
+                      </button>
+                    )}
+                  </div>
+                  <span className={cn(typeClass("caption"), "truncate font-mono text-foreground")}>
+                    {activeModel}
+                  </span>
+                  <p className={cn(typeClass("micro"), "m-0 text-muted-foreground")}>
+                    已自动同步本档最新 Claude 主力模型
+                  </p>
+                </div>
+              );
+            })()}
+
+            {ready && agent === "codex" && catalog?.enabled && (catalog.active_model || catalog.default_model) && (
+              <div className="flex flex-col gap-1.5 rounded-lg bg-surface-2 px-3 py-2.5 ring-1 ring-border/70">
+                <div className="flex items-center justify-between gap-2">
+                  <span className={cn(typeClass("caption"), "text-muted-foreground")}>当前默认模型</span>
+                  {onOpenModels && (
+                    <button
+                      type="button"
+                      disabled={off || !!task?.busy || disabled}
+                      onClick={() => onOpenModels("codex")}
+                      className={cn(typeClass("micro"), "text-muted-foreground hover:text-foreground disabled:opacity-50")}
+                    >
+                      换模型 →
+                    </button>
+                  )}
+                </div>
+                <span className={cn(typeClass("caption"), "truncate font-mono text-foreground")}>
+                  {catalog.active_model || catalog.default_model}
+                </span>
+                <p className={cn(typeClass("micro"), "m-0 text-muted-foreground")}>
+                  已自动精简下拉菜单，只保留本档最新主力
+                </p>
+              </div>
             )}
           </CardContent>
 

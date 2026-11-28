@@ -64,19 +64,36 @@ func readJSONObject(path string) (map[string]any, error) {
 	return v, nil
 }
 type DesktopCatalogModel struct {
-	ID            string `json:"id"`
-	DisplayName   string `json:"display_name,omitempty"`
-	Vendor        string `json:"vendor,omitempty"`
-	ContextWindow int    `json:"context_window,omitempty"`
+	ID              string `json:"id"`
+	DisplayName     string `json:"display_name,omitempty"`
+	Vendor          string `json:"vendor,omitempty"`
+	ContextWindow   int    `json:"context_window,omitempty"`
+	Visibility      string `json:"visibility,omitempty"`
+	IsLatest        bool   `json:"is_latest,omitempty"`
+	IsRecommended   bool   `json:"is_recommended,omitempty"`
+	IsCnAlternative bool   `json:"is_cn_alternative,omitempty"`
+	RoleLabel       string `json:"role_label,omitempty"`
+}
+
+type DesktopClaudeSlots struct {
+	Primary string `json:"primary"`
+	Sonnet  string `json:"sonnet"`
+	Opus    string `json:"opus"`
+	Haiku   string `json:"haiku"`
 }
 
 type DesktopCatalogPayload struct {
-	Enabled      bool                  `json:"enabled"`
-	Version      int64                 `json:"version"`
-	Agent        string                `json:"agent"`
-	Tier         string                `json:"tier"`
-	DefaultModel string                `json:"default_model"`
-	Models       []DesktopCatalogModel `json:"models"`
+	Enabled        bool                  `json:"enabled"`
+	Source         string                `json:"source,omitempty"`
+	Version        int64                 `json:"version"`
+	Agent          string                `json:"agent"`
+	Tier           string                `json:"tier"`
+	DefaultModel   string                `json:"default_model"`
+	ActiveModel    string                `json:"active_model,omitempty"`
+	ClaudeMode     string                `json:"claude_mode,omitempty"`
+	ClaudeSlots    *DesktopClaudeSlots   `json:"claude_slots,omitempty"`
+	CnAlternatives []DesktopCatalogModel `json:"cn_alternatives,omitempty"`
+	Models         []DesktopCatalogModel `json:"models"`
 }
 
 func configureDesktopGUI(agent, origin, secret string) error {

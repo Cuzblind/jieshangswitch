@@ -22,6 +22,7 @@ pub enum Action {
     Check,
     TestChat,
     SwitchTier,
+    SelectModel,
     Repair,
     Restore,
     RestoreConfirm,
@@ -74,6 +75,7 @@ impl Action {
             Self::Check => "check",
             Self::TestChat => "test-chat",
             Self::SwitchTier => "switch-tier",
+            Self::SelectModel => "select-model",
             Self::Repair => "repair",
             Self::Restore => "restore",
             Self::RestoreConfirm => "restore-confirm",
@@ -126,6 +128,7 @@ impl Action {
                 | Self::Check
                 | Self::TestChat
                 | Self::SwitchTier
+                | Self::SelectModel
                 | Self::Repair
                 | Self::LogoutConfirm
                 | Self::CatalogLoad
@@ -332,6 +335,9 @@ mod tests {
         let sw: Action = serde_json::from_value(serde_json::json!("switch-account")).unwrap();
         assert_eq!(sw.name(), "switch-account");
         assert!(!sw.requires_agent());
+        let sm: Action = serde_json::from_value(serde_json::json!("select-model")).unwrap();
+        assert_eq!(sm.name(), "select-model");
+        assert!(sm.requires_agent());
     }
 
     #[test]

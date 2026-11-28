@@ -97,8 +97,13 @@ func checkSecret(s string) error {
 // ---------- write (/i) ----------
 
 type ClaudeOpts struct {
-	Origin string // site origin; written as ANTHROPIC_BASE_URL
-	Secret string
+	Origin       string // site origin; written as ANTHROPIC_BASE_URL
+	Secret       string
+	Model        string // startup model (ANTHROPIC_MODEL), required when syncing model aliases
+	SonnetModel  string // optional ANTHROPIC_DEFAULT_SONNET_MODEL
+	OpusModel    string // optional ANTHROPIC_DEFAULT_OPUS_MODEL
+	HaikuModel   string // optional ANTHROPIC_DEFAULT_HAIKU_MODEL
+	ManageModels bool   // sync the four managed keys, or remove them all when no models are supplied
 }
 
 // WriteClaude mirrors write_claude_settings (python3 branch).
@@ -109,6 +114,16 @@ func (p Paths) WriteClaude(o ClaudeOpts) error {
 	}
 	if err := checkSecret(o.Secret); err != nil {
 		return err
+	}
+	for _, m := range []string{o.Model, o.SonnetModel, o.OpusModel, o.HaikuModel} {
+		if trimmed := strings.TrimSpace(m); trimmed != "" && !reModel.MatchString(trimmed) {
+			return ErrBadInput
+		}
+	}
+	hasAliases := strings.TrimSpace(o.SonnetModel) != "" ||
+		strings.TrimSpace(o.OpusModel) != "" || strings.TrimSpace(o.HaikuModel) != ""
+	if o.ManageModels && hasAliases && strings.TrimSpace(o.Model) == "" {
+		return fmt.Errorf("%w: managed Claude aliases require ClaudeOpts.Model", ErrBadInput)
 	}
 	path := p.ClaudeSettings()
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
@@ -147,6 +162,20 @@ func (p Paths) WriteClaude(o ClaudeOpts) error {
 	env.set("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", "1")
 	env.set("DISABLE_TELEMETRY", "1")
 	env.set("DISABLE_ERROR_REPORTING", "1")
+	if o.ManageModels || hasAliases || strings.TrimSpace(o.Model) != "" {
+		setOrDel := func(key, val string) {
+			v := strings.TrimSpace(val)
+			if v != "" {
+				env.set(key, v)
+			} else if o.ManageModels {
+				env.del(key)
+			}
+		}
+		setOrDel("ANTHROPIC_MODEL", o.Model)
+		setOrDel("ANTHROPIC_DEFAULT_SONNET_MODEL", o.SonnetModel)
+		setOrDel("ANTHROPIC_DEFAULT_OPUS_MODEL", o.OpusModel)
+		setOrDel("ANTHROPIC_DEFAULT_HAIKU_MODEL", o.HaikuModel)
+	}
 	data.set("env", env)
 	out := dumpJSON(data)
 	if err := atomicWrite(path, out, 0o600); err != nil {
@@ -163,16 +192,19 @@ type CatalogModel struct {
 	DisplayName   string `json:"display_name,omitempty"`
 	Vendor        string `json:"vendor,omitempty"`
 	ContextWindow int    `json:"context_window,omitempty"`
+	Visibility    string `json:"visibility,omitempty"` // "list" (default) | "hide"
 }
 
 type CodexOpts struct {
-	Origin        string         // site origin; base_url = origin + "/v1"
+	Origin        string // site origin; base_url = origin + "/v1"
 	Secret        string
 	Model         string         // RELAY_CODEX_MODEL or authorized catalog default
+	ForceModel    bool           // Explicit user model choice overrides existing config.toml model
 	Shell         string         // $SHELL, selects rc file
 	CatalogModels []CatalogModel // Optional authorized multi-brand menu catalog
-	AllowedModels []string       // Existing user-selected model is preserved when in this set
+	AllowedModels []string       // Existing user-selected model is preserved when in this set (unless ForceModel)
 	ClearCatalog  bool           // Explicitly remove managed catalog when server withdraws it
+	SkipShellEnv  bool           // Skip POSIX codex.env and shell rc writes (e.g. Windows desktop sync)
 }
 
 // WriteCodexCatalog writes the managed Codex native model catalog JSON file
@@ -229,6 +261,10 @@ func (p Paths) WriteCodexCatalog(models []CatalogModel) (string, error) {
 		if ctxWin <= 0 {
 			ctxWin = 128000
 		}
+		vis := strings.TrimSpace(m.Visibility)
+		if vis != "hide" {
+			vis = "list"
+		}
 		entries = append(entries, codexCatalogEntry{
 			Slug:                       id,
 			DisplayName:                name,
@@ -236,7 +272,7 @@ func (p Paths) WriteCodexCatalog(models []CatalogModel) (string, error) {
 			DefaultReasoningLevel:      "medium",
 			SupportedReasoningLevels:   defaultLevels,
 			ShellType:                  "unified_exec",
-			Visibility:                 "list",
+			Visibility:                 vis,
 			SupportedInAPI:             true,
 			Priority:                   i + 1,
 			BaseInstructions:           "You are a helpful coding assistant.",
@@ -302,7 +338,7 @@ func (p Paths) WriteCodex(o CodexOpts) error {
 	if err != nil {
 		return err
 	}
-	if len(o.AllowedModels) > 0 {
+	if !o.ForceModel && len(o.AllowedModels) > 0 {
 		if existing := extractCodexModel(cur); existing != "" {
 			for _, allowed := range o.AllowedModels {
 				if existing == allowed {
@@ -319,36 +355,38 @@ func (p Paths) WriteCodex(o CodexOpts) error {
 	if err := m.recordWrite(path); err != nil {
 		return err
 	}
-	// codex.env (ours; never backed up)
-	if err := os.MkdirAll(p.Dir(), 0o700); err != nil {
-		return err
-	}
-	env := fmt.Sprintf("export %s=%s\n", CodexEnvName, shellQuote(o.Secret))
-	if err := atomicWrite(p.CodexEnv(), []byte(env), 0o600); err != nil {
-		return err
-	}
-	// shell rc
-	rc := p.RCFor(o.Shell)
-	if err := os.MkdirAll(filepath.Dir(rc), 0o700); err != nil {
-		return err
-	}
-	if err := m.backupOnce(rc); err != nil {
-		return err
-	}
-	mode := os.FileMode(0o644)
-	if st, err := os.Stat(rc); err == nil {
-		mode = st.Mode().Perm()
-	}
-	cur, err = readText(rc)
-	if err != nil {
-		return err
-	}
-	rcOut := renderRC(cur)
-	if err := atomicWrite(rc, []byte(rcOut), mode); err != nil {
-		return err
-	}
-	if err := m.recordWrite(rc); err != nil {
-		return err
+	if !o.SkipShellEnv {
+		// codex.env (ours; never backed up)
+		if err := os.MkdirAll(p.Dir(), 0o700); err != nil {
+			return err
+		}
+		env := fmt.Sprintf("export %s=%s\n", CodexEnvName, shellQuote(o.Secret))
+		if err := atomicWrite(p.CodexEnv(), []byte(env), 0o600); err != nil {
+			return err
+		}
+		// shell rc
+		rc := p.RCFor(o.Shell)
+		if err := os.MkdirAll(filepath.Dir(rc), 0o700); err != nil {
+			return err
+		}
+		if err := m.backupOnce(rc); err != nil {
+			return err
+		}
+		mode := os.FileMode(0o644)
+		if st, err := os.Stat(rc); err == nil {
+			mode = st.Mode().Perm()
+		}
+		cur, err = readText(rc)
+		if err != nil {
+			return err
+		}
+		rcOut := renderRC(cur)
+		if err := atomicWrite(rc, []byte(rcOut), mode); err != nil {
+			return err
+		}
+		if err := m.recordWrite(rc); err != nil {
+			return err
+		}
 	}
 	return m.save()
 }
@@ -568,7 +606,7 @@ func (p Paths) Clear() error {
 	if err := stripMarkedFile(p.Bashrc(), RCStart, RCEnd, false); err != nil {
 		return err
 	}
-	for _, f := range []string{p.CodexEnv(), p.CodexCatalog(), p.Stamp(), p.ErrorLog()} {
+	for _, f := range []string{p.CodexEnv(), p.CodexCatalog(), filepath.Join(p.Dir(), "model-prefs.json"), p.Stamp(), p.ErrorLog()} {
 		if err := os.Remove(f); err != nil && !os.IsNotExist(err) {
 			return err
 		}
@@ -606,6 +644,10 @@ func clearClaude(path string) error {
 				"ANTHROPIC_BASE_URL",
 				"ANTHROPIC_AUTH_TOKEN",
 				"ANTHROPIC_API_KEY",
+				"ANTHROPIC_MODEL",
+				"ANTHROPIC_DEFAULT_SONNET_MODEL",
+				"ANTHROPIC_DEFAULT_OPUS_MODEL",
+				"ANTHROPIC_DEFAULT_HAIKU_MODEL",
 				"CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC",
 				"DISABLE_TELEMETRY",
 				"DISABLE_ERROR_REPORTING",

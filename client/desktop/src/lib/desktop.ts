@@ -20,6 +20,7 @@ export type Action =
   | "check"
   | "test-chat"
   | "switch-tier"
+  | "select-model"
   | "repair"
   | "restore"
   | "restore-confirm"
@@ -194,13 +195,29 @@ export interface CatalogModel {
   display_name?: string;
   vendor?: string;
   context_window?: number;
+  visibility?: "list" | "hide" | string;
+  is_latest?: boolean;
+  is_recommended?: boolean;
+  is_cn_alternative?: boolean;
+  role_label?: string;
+}
+export interface ClaudeSlots {
+  primary: string;
+  sonnet: string;
+  opus: string;
+  haiku: string;
 }
 export interface CatalogSnapshot {
   enabled: boolean;
+  source?: string;
   version: number;
   agent: string;
   tier: string;
   default_model: string;
+  active_model?: string;
+  claude_mode?: "native" | "cn" | string;
+  claude_slots?: ClaudeSlots;
+  cn_alternatives?: CatalogModel[];
   models: CatalogModel[];
 }
 export interface DesktopState {
@@ -318,6 +335,11 @@ export const desktopSkillsCatalog = (agent?: Agent) =>
 
 export const desktopSwitchTier = (agent: Agent, tier: string) =>
   invoke<DesktopState>("desktop_action", { action: "switch-tier", agent, confirm: false, tier });
+
+export const desktopSelectModel = (
+  agent: Agent,
+  opts: { model?: string; mode?: "native" | "cn" },
+) => invoke<DesktopState>("desktop_action", { action: "select-model", agent, confirm: false, ...opts });
 
 export const desktopUsage = (range: UsageRange) =>
   invoke<DesktopState>("desktop_action", { action: "usage-load", confirm: false, range });

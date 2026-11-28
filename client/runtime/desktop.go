@@ -40,6 +40,9 @@ type DesktopRequest struct {
 	SkillZip string `json:"skillZip,omitempty"`
 	// Tier names the target routing line (economy / balanced / stable) for switch-tier.
 	Tier string `json:"tier,omitempty"`
+	// Model and Mode carry user model selection for select-model ("native" | "cn" or explicit model ID).
+	Model string `json:"model,omitempty"`
+	Mode  string `json:"mode,omitempty"`
 	// Range selects the usage time window (24h / 7d / 30d / 90d) for usage-load.
 	Range string `json:"range,omitempty"`
 	// WorkDir sets the CLI launch working directory for pick-work-dir / set-work-dir.
@@ -283,6 +286,12 @@ func (a *App) DesktopAction(r DesktopRequest) error {
 		for _, agent := range []string{"claude", "codex"} {
 			if secret, configured := a.env.Configured(agent, a.origin); configured {
 				_ = a.checkConnection(agent, secret)
+				a.mu.Lock()
+				hasCatalog := a.catalogs[agent] != nil
+				a.mu.Unlock()
+				if !hasCatalog {
+					_ = a.loadDesktopCatalog(agent, secret, false)
+				}
 			}
 		}
 		a.desktopRefresh()
@@ -540,13 +549,89 @@ func (a *App) DesktopAction(r DesktopRequest) error {
 		if err != nil {
 			return err
 		}
+		fallbackMsg := ""
 		if secret, ok := a.env.Configured(r.Agent, a.origin); ok {
-			a.syncDesktopCatalog(r.Agent, secret)
+			fallbackMsg = a.syncDesktopCatalogWithNotice(r.Agent, secret)
 		}
 		a.desktopRefresh()
 		notice := "已将 " + agentName(r.Agent) + " 切到「" + label + "」线路，下一个任务生效。"
+		if fallbackMsg != "" {
+			notice = "已切到「" + label + "」线路；" + fallbackMsg
+		}
 		if a.env.GUIRunning != nil && a.env.GUIRunning(r.Agent) {
-			notice = "已将 " + agentName(r.Agent) + " 切到「" + label + "」线路；检测到桌面版正在运行，请退出并重开以同步最新模型列表。"
+			notice += " 检测到桌面版正在运行，请退出并重开以同步最新模型列表。"
+		}
+		a.setView(View{Screen: "home", Agent: r.Agent, Notice: notice})
+	case "select-model":
+		secret, ok := a.env.Configured(r.Agent, a.origin)
+		if !ok || secret == "" {
+			return errors.New("请先接上 " + agentName(r.Agent) + " 再切换默认模型")
+		}
+		cat, err := a.fetchDesktopCatalog(secret)
+		if err != nil || cat == nil || !cat.Enabled || len(cat.Models) == 0 {
+			return errors.New("暂时读不到当前线路的模型列表，请稍后再试")
+		}
+		prefs := loadModelPrefs()
+		mode := strings.ToLower(strings.TrimSpace(r.Mode))
+		chosenModel := strings.TrimSpace(r.Model)
+		summary := ""
+		if r.Agent == "claude" {
+			switch {
+			case mode == "native" && chosenModel == "":
+				prefs.ClaudeMode = "native"
+				prefs.ClaudeModel = ""
+				sel := resolveClaudeSelection(cat, prefs)
+				summary = "原版 Claude 三档（主力 " + sel.activeModel + "）"
+			case mode == "cn":
+				if chosenModel == "" && len(cat.CnAlternatives) > 0 {
+					chosenModel = cat.CnAlternatives[0].ID
+				}
+				if chosenModel == "" || !catalogContainsModel(cat, chosenModel) {
+					return errors.New("当前线路暂不支持国产平替模型，可切换到省钱或均衡线路")
+				}
+				prefs.ClaudeMode = "cn"
+				prefs.ClaudeModel = chosenModel
+				summary = "国产省钱平替（" + chosenModel + "）"
+			default:
+				if chosenModel == "" || !catalogContainsModel(cat, chosenModel) {
+					return errors.New("该模型在当前线路不可用，请刷新模型清单后再试")
+				}
+				if catalogModelIsCN(cat, chosenModel) || !strings.HasPrefix(strings.ToLower(chosenModel), "claude") {
+					prefs.ClaudeMode = "cn"
+				} else {
+					prefs.ClaudeMode = "native"
+				}
+				prefs.ClaudeModel = chosenModel
+				summary = chosenModel
+			}
+		} else {
+			if chosenModel == "" || !catalogContainsModel(cat, chosenModel) {
+				return errors.New("该模型在当前线路不可用，请刷新模型清单后再试")
+			}
+			prefs.CodexModel = chosenModel
+			summary = chosenModel
+		}
+		snapshot := cloneDesktopCatalog(cat)
+		a.connectionMu.Lock()
+		_, writeErr := a.writeDesktopCatalogWithPrefs(r.Agent, secret, snapshot, prefs, false)
+		if writeErr != nil {
+			a.connectionMu.Unlock()
+			return errors.New("没能写入本地配置文件，默认模型未切换，请检查文件权限后再试")
+		}
+		if err := saveModelPrefs(prefs); err != nil {
+			a.connectionMu.Unlock()
+			return errors.New("本地配置已写入，但没能保存偏好记录，请稍后再试")
+		}
+		a.mu.Lock()
+		if a.catalogs == nil {
+			a.catalogs = make(map[string]*DesktopCatalogPayload)
+		}
+		a.catalogs[r.Agent] = snapshot
+		a.mu.Unlock()
+		a.connectionMu.Unlock()
+		notice := "已将 " + agentName(r.Agent) + " 默认模型切换为 " + summary + "，新开的会话立即生效。"
+		if a.env.GUIRunning != nil && a.env.GUIRunning(r.Agent) {
+			notice = "已将 " + agentName(r.Agent) + " 默认模型切换为 " + summary + "；检测到桌面版正在运行，请退出并重开以生效。"
 		}
 		a.setView(View{Screen: "home", Agent: r.Agent, Notice: notice})
 	case "repair", "logout-confirm":

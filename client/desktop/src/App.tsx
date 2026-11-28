@@ -60,6 +60,7 @@ import {
   desktopCatalog,
   desktopMcpAction,
   desktopSetWorkDir,
+  desktopSelectModel,
   desktopSkillAction,
   desktopSkillsCatalog,
   desktopSwitchTier,
@@ -98,7 +99,7 @@ type Page = "home" | "usage" | "models" | "skills" | "mcp" | "prompts" | "settin
 const pages: { page: Page; icon: typeof House; title: string; subtitle: string }[] = [
   { page: "home", icon: House, title: "你的助手，准备好就能出发", subtitle: "安装、接上、切换线路与测试对话，在这里一次完成。" },
   { page: "usage", icon: BarChart3, title: "用量与日志", subtitle: "查看真实消费金额、Token 用量、年度活跃度与最近请求记录。" },
-  { page: "models", icon: Cpu, title: "可用模型", subtitle: "当前已授权的 6 大品牌模型清单，点击即可复制模型 ID。" },
+  { page: "models", icon: Cpu, title: "可用模型", subtitle: "当前线路最新可用模型清单，支持一键设为默认或复制模型 ID。" },
   { page: "skills", icon: BookOpen, title: "Skills", subtitle: "给助手装上专门的本领，比如写论文、做表格、查文献。" },
   { page: "mcp", icon: Plug, title: "MCP 服务", subtitle: "让助手连接文件、数据库、浏览器等外部工具。" },
   { page: "prompts", icon: FileText, title: "提示词", subtitle: "为助手准备常用的规则，启用后新开的会话会按它工作。" },
@@ -509,6 +510,23 @@ function DesktopShell() {
       }
     } catch (err) {
       setError(message(err, "线路没换成，还是原来的线路。"));
+    } finally {
+      setPending(false);
+    }
+  }
+  async function selectModel(agent: Agent, opts: { model?: string; mode?: "native" | "cn" }) {
+    if (busy || unavailable) return;
+    setPending(true);
+    setError("");
+    try {
+      const next = await desktopSelectModel(agent, opts);
+      applyState(next);
+      if (next.view.notice) {
+        setGoneNotice("");
+        setNoticeSeq((n) => n + 1);
+      }
+    } catch (err) {
+      setError(message(err, "默认模型没换成，还是原来的配置。"));
     } finally {
       setPending(false);
     }
@@ -989,6 +1007,11 @@ function DesktopShell() {
                       act={(a, agent) => void act(a, agent)}
                       cancelInstall={(agent) => void cancelInstall(agent)}
                       onSwitchTier={(agent, tier) => void switchTier(agent, tier)}
+                      onSelectModel={(agent, opts) => void selectModel(agent, opts)}
+                      onOpenModels={(agent) => {
+                        setPanelAgent(agent);
+                        go("models");
+                      }}
                     />
                   ))}
                 </section>
@@ -1191,9 +1214,11 @@ function DesktopShell() {
               catalog={state?.catalogs?.[panelAgent]}
               connected={panelAgentConnected}
               loading={catalogLoading}
+              busy={busy || unavailable}
               onRefresh={() => void loadPanel("models", panelAgent)}
               onGoHome={() => go("home")}
               onOpenPricing={() => void act("open-pricing")}
+              onSelectModel={(model, mode) => void selectModel(panelAgent, { model, mode })}
             />
           )}
           {page === "skills" && (

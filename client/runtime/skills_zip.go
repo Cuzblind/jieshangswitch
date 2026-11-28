@@ -13,6 +13,13 @@ import (
 // file picker, never from the page. Everything is checked before anything is
 // written, and a failed import leaves no folder behind.
 func ImportSkillZip(agent, zipPath string) ([]Skill, error) {
+	return ImportSkillZipWithName(agent, zipPath, "")
+}
+
+// ImportSkillZipWithName unpacks a skill zip into the assistant's skills folder.
+// When preferredDir is non-empty (e.g. a remote Skill store slug), it overrides
+// the inferred directory name so temp-file zips always install under their slug.
+func ImportSkillZipWithName(agent, zipPath, preferredDir string) ([]Skill, error) {
 	agentDir, err := skillAgentDir(agent)
 	if err != nil {
 		return nil, err
@@ -25,6 +32,9 @@ func ImportSkillZip(agent, zipPath string) ([]Skill, error) {
 	prefix, dir, err := skillZipLayout(z.File, zipPath)
 	if err != nil {
 		return nil, err
+	}
+	if preferred := strings.TrimSpace(preferredDir); preferred != "" {
+		dir = preferred
 	}
 	if problem := skillDirProblem(dir); problem != "" {
 		return nil, errors.New("Skill " + problem)

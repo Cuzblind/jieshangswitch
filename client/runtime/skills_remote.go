@@ -235,5 +235,5 @@ func (a *App) installRemoteSkill(agent, slug string) ([]Skill, error) {
 		return nil, errors.New("保存临时安装包失败")
 	}
 
-	return ImportSkillZip(agent, tmpPath)
+	return ImportSkillZipWithName(agent, tmpPath, slug)
 }

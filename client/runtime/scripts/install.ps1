@@ -26,6 +26,7 @@ $script:DefaultCodexModel = 'gpt-5.6-sol'
 $script:MarkerStart = '# jieshangai-provider-start'
 $script:MarkerEnd = '# jieshangai-provider-end'
 $script:ModelTag = '# jieshangai-model'
+$script:CatalogTag = '# jieshangai-catalog'
 $script:ManifestHeader = '# jieshangai backup manifest v1'
 
 $script:ReportToken = ''
@@ -98,6 +99,119 @@ function Test-RelayConnection([string]$Origin, [string]$Secret) {
   } catch {
     return $false
   }
+}
+
+function Get-CleanModelId($Value) {
+  $s = [string]$Value
+  if ([string]::IsNullOrWhiteSpace($s)) { return '' }
+  $s = $s.Trim()
+  if ($s -match '^[A-Za-z0-9._:/-]+$') { return $s }
+  return ''
+}
+
+# Best-effort live catalog fetch in claim mode; never fails the install.
+function Get-RelayInstallCatalog([string]$Origin, [string]$Secret, [string]$Agent, [string]$Root) {
+  $out = @{
+    Status       = ''
+    ClaudePrimary = ''
+    ClaudeSonnet = ''
+    ClaudeOpus   = ''
+    ClaudeHaiku  = ''
+    CodexModel   = ''
+    CodexPath    = ''
+  }
+  if (-not (Test-ClaimMode)) { return $out }
+  try {
+    $resp = Invoke-RestMethod -Method Get -Uri ($Origin + '/api/install/catalog') `
+      -Headers @{ Authorization = ('Bearer ' + $Secret) } -TimeoutSec 10 -UseBasicParsing
+    if (-not $resp -or -not $resp.success -or -not $resp.data) { return $out }
+    $data = $resp.data
+    $models = @($data.models)
+    if (-not $data.enabled -or $models.Count -eq 0) {
+      $out.Status = 'withdrawn'
+      if ($Agent -eq 'codex' -and -not [string]::IsNullOrWhiteSpace($Root)) {
+        $staleCat = Join-Path (Join-Path $Root '.jieshangai') 'codex-catalog.json'
+        if (Test-Path -LiteralPath $staleCat) { Remove-Item -LiteralPath $staleCat -Force -ErrorAction SilentlyContinue }
+      }
+      return $out
+    }
+    $out.Status = 'ok'
+    if ($Agent -eq 'claude') {
+      $slots = $data.claude_slots
+      $primary = Get-CleanModelId $data.default_model
+      if (-not $primary -and $slots) { $primary = Get-CleanModelId $slots.primary }
+      if (-not $primary) {
+        foreach ($item in $models) {
+          $primary = Get-CleanModelId $item.id
+          if ($primary) { break }
+        }
+      }
+      $sonnet = if ($slots) { Get-CleanModelId $slots.sonnet } else { '' }
+      if (-not $sonnet) { $sonnet = $primary }
+      $opus = if ($slots) { Get-CleanModelId $slots.opus } else { '' }
+      if (-not $opus) { $opus = if ($sonnet) { $sonnet } else { $primary } }
+      $haiku = if ($slots) { Get-CleanModelId $slots.haiku } else { '' }
+      if (-not $haiku) { $haiku = if ($sonnet) { $sonnet } else { $primary } }
+      if ($primary -and (-not $primary.ToLowerInvariant().StartsWith('claude'))) {
+        $sonnet = $opus = $haiku = $primary
+      }
+      # The aliases apply to named selections. Claude Code also needs the startup model.
+      $out.ClaudePrimary = $primary
+      $out.ClaudeSonnet = $sonnet
+      $out.ClaudeOpus = $opus
+      $out.ClaudeHaiku = $haiku
+    } elseif ($Agent -eq 'codex') {
+      $out.CodexModel = Get-CleanModelId $data.default_model
+      $defaultLevels = @(
+        @{ effort = 'low'; description = 'Faster responses with lighter reasoning' }
+        @{ effort = 'medium'; description = 'Balanced speed and reasoning depth' }
+        @{ effort = 'high'; description = 'Greater reasoning depth for complex tasks' }
+      )
+      $entries = New-Object System.Collections.Generic.List[object]
+      $idx = 0
+      foreach ($item in $models) {
+        $mid = Get-CleanModelId $item.id
+        if (-not $mid) { continue }
+        $name = [string]$item.display_name
+        if ([string]::IsNullOrWhiteSpace($name)) { $name = $mid } else { $name = $name.Trim() }
+        $ctx = 200000
+        if ($item.context_window -and [int]$item.context_window -gt 0) { $ctx = [int]$item.context_window }
+        $vis = ([string]$item.visibility).Trim().ToLowerInvariant()
+        if ($vis -ne 'hide') { $vis = 'list' }
+        $entry = [ordered]@{
+          slug                         = $mid
+          display_name                 = $name
+          default_reasoning_level      = 'medium'
+          supported_reasoning_levels   = $defaultLevels
+          shell_type                   = 'shell_command'
+          visibility                   = $vis
+          supported_in_api             = $true
+          priority                     = $idx
+          base_instructions            = ''
+          supports_reasoning_summaries = $true
+          support_verbosity            = $false
+          truncation_policy            = @{ mode = 'tokens'; limit = 10000 }
+          supports_parallel_tool_calls = $true
+          context_window               = $ctx
+          experimental_supported_tools = @()
+        }
+        $vendor = [string]$item.vendor
+        if (-not [string]::IsNullOrWhiteSpace($vendor)) {
+          $entry['description'] = $vendor.Trim() + ' via 接上AI'
+        }
+        $entries.Add($entry) | Out-Null
+        $idx++
+      }
+      if ($entries.Count -gt 0 -and -not [string]::IsNullOrWhiteSpace($Root)) {
+        $catPath = Join-Path (Join-Path $Root '.jieshangai') 'codex-catalog.json'
+        $payload = @{ models = $entries.ToArray() }
+        $json = ConvertTo-Json -InputObject $payload -Depth 10
+        Write-Utf8File $catPath ($json.TrimEnd() + "`n")
+        $out.CodexPath = $catPath
+      }
+    }
+  } catch { }
+  return $out
 }
 
 function Clear-EngineCode {
@@ -304,7 +418,7 @@ function Write-Utf8File([string]$Path, [string]$Text) {
   [IO.File]::Move($tmp, $Path)
 }
 
-function Write-ClaudeSettings([string]$Path, [string]$Base, [string]$Secret) {
+function Write-ClaudeSettings([string]$Path, [string]$Base, [string]$Secret, [hashtable]$Catalog = $null) {
   $dir = Split-Path -Parent $Path
   if (-not (Test-Path -LiteralPath $dir)) {
     New-Item -ItemType Directory -Path $dir -Force | Out-Null
@@ -332,6 +446,23 @@ function Write-ClaudeSettings([string]$Path, [string]$Base, [string]$Secret) {
   Set-NoteProperty $data.env 'CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC' '1'
   Set-NoteProperty $data.env 'DISABLE_TELEMETRY' '1'
   Set-NoteProperty $data.env 'DISABLE_ERROR_REPORTING' '1'
+  if ($null -ne $Catalog) {
+    if ([string]$Catalog.Status -eq 'withdrawn') {
+      foreach ($k in @('ANTHROPIC_MODEL', 'ANTHROPIC_DEFAULT_SONNET_MODEL', 'ANTHROPIC_DEFAULT_OPUS_MODEL', 'ANTHROPIC_DEFAULT_HAIKU_MODEL')) {
+        if ($null -ne $data.env.PSObject.Properties[$k]) {
+          $data.env.PSObject.Properties.Remove($k)
+        }
+      }
+    } elseif ($Catalog.ClaudePrimary) {
+      Set-NoteProperty $data.env 'ANTHROPIC_MODEL' ([string]$Catalog.ClaudePrimary)
+      $mSonnet = [string]$Catalog.ClaudeSonnet
+      $mOpus = [string]$Catalog.ClaudeOpus
+      $mHaiku = [string]$Catalog.ClaudeHaiku
+      if ($mSonnet) { Set-NoteProperty $data.env 'ANTHROPIC_DEFAULT_SONNET_MODEL' $mSonnet }
+      if ($mOpus) { Set-NoteProperty $data.env 'ANTHROPIC_DEFAULT_OPUS_MODEL' $mOpus }
+      if ($mHaiku) { Set-NoteProperty $data.env 'ANTHROPIC_DEFAULT_HAIKU_MODEL' $mHaiku }
+    }
+  }
   $json = ConvertTo-Json -InputObject $data -Depth 100
   Write-Utf8File $Path ($json.TrimEnd() + "`n")
   Write-RecordedWrite $Path
@@ -364,7 +495,7 @@ function Set-TopLevelToml([string]$Text, [string]$Key, [string]$ValueLiteral) {
   return ($Key + ' = ' + $ValueLiteral + "`n" + $Text.TrimEnd("`r"))
 }
 
-function Write-CodexConfig([string]$Path, [string]$Base, [string]$Model) {
+function Write-CodexConfig([string]$Path, [string]$Base, [string]$Model, [string]$CatalogPath = '', [bool]$ClearCatalog = $false) {
   $text = ''
   Backup-Once $Path
   if (Test-Path -LiteralPath $Path) {
@@ -376,6 +507,18 @@ function Write-CodexConfig([string]$Path, [string]$Base, [string]$Model) {
     $text = Set-TopLevelToml $text 'model' ('"' + $Model + '" ' + $script:ModelTag)
   } elseif (-not [regex]::IsMatch($text, '(?m)^model[ \t]*=')) {
     $text = Set-TopLevelToml $text 'model' ('"' + $script:DefaultCodexModel + '" ' + $script:ModelTag)
+  }
+  if (-not [string]::IsNullOrWhiteSpace($CatalogPath)) {
+    $escapedCat = $CatalogPath.Replace('\', '\\').Replace('"', '\"')
+    $text = Set-TopLevelToml $text 'model_catalog_json' ('"' + $escapedCat + '" ' + $script:CatalogTag)
+  } elseif ($ClearCatalog) {
+    $kept = New-Object System.Collections.Generic.List[string]
+    foreach ($line in ($text -split "`n", -1)) {
+      $t = $line.TrimEnd("`r")
+      if ($t -match '^model_catalog_json[ \t]*=.*# jieshangai-catalog$') { continue }
+      $kept.Add($t) | Out-Null
+    }
+    $text = ($kept -join "`n")
   }
   $text = $text.TrimEnd("`r", "`n")
   $block = @(
@@ -596,9 +739,10 @@ function Invoke-RelayInstall {
 
   Send-RelayProgress -Beat 3
   Say '正在把连接写好……'
+  $catalog = Get-RelayInstallCatalog $origin $secret $agent $root
   try {
     if ($agent -eq 'claude') {
-      Write-ClaudeSettings (Join-Path (Join-Path $root '.claude') 'settings.json') $origin $secret
+      Write-ClaudeSettings (Join-Path (Join-Path $root '.claude') 'settings.json') $origin $secret $catalog
     } else {
       $model = ''
       if (-not [string]::IsNullOrWhiteSpace($env:RELAY_CODEX_MODEL)) {
@@ -607,7 +751,10 @@ function Invoke-RelayInstall {
           throw 'config-write-failed'
         }
       }
-      Write-CodexConfig (Join-Path (Join-Path $root '.codex') 'config.toml') ($origin + '/v1') $model
+      if ([string]::IsNullOrWhiteSpace($model) -and -not [string]::IsNullOrWhiteSpace([string]$catalog.CodexModel)) {
+        $model = [string]$catalog.CodexModel
+      }
+      Write-CodexConfig (Join-Path (Join-Path $root '.codex') 'config.toml') ($origin + '/v1') $model ([string]$catalog.CodexPath) ([string]$catalog.Status -eq 'withdrawn')
       Write-CodexEnvFile (Join-Path (Join-Path $root '.jieshangai') 'codex.env') $secret
       Set-CodexProcessEnv $secret
     }

@@ -155,7 +155,41 @@ func TestDesktopRemoteSkillsCatalogAndInstall(t *testing.T) {
 		t.Fatalf("expected lit-review in managed enabled claude skills, got %+v", st.Skills["claude"])
 	}
 
-	// 6. Connection invalidation clears cached skill catalog.
+	// 6. Root-level SKILL.md zip installed via preferred slug uses slug dir (never temp filename) and blocks duplicates.
+	var rootBuf bytes.Buffer
+	rzw := zip.NewWriter(&rootBuf)
+	rw, err := rzw.Create("SKILL.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := rw.Write([]byte("---\nname: Root Skill\ndescription: root level skill\n---\n")); err != nil {
+		t.Fatal(err)
+	}
+	if err := rzw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	rootZipPath := filepath.Join(t.TempDir(), "jieshangai-skill-random999.zip")
+	if err := os.WriteFile(rootZipPath, rootBuf.Bytes(), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	list, err := ImportSkillZipWithName("claude", rootZipPath, "root-skill-slug")
+	if err != nil {
+		t.Fatalf("ImportSkillZipWithName failed: %v", err)
+	}
+	foundRoot := false
+	for _, s := range list {
+		if s.Dir == "root-skill-slug" {
+			foundRoot = true
+		}
+	}
+	if !foundRoot {
+		t.Fatalf("expected root-skill-slug dir, got %+v", list)
+	}
+	if _, err := ImportSkillZipWithName("claude", rootZipPath, "root-skill-slug"); err == nil {
+		t.Fatal("expected duplicate install of same slug to fail")
+	}
+
+	// 7. Connection invalidation clears cached skill catalog.
 	app.connectionMu.Lock()
 	app.invalidateConnectionData()
 	app.connectionMu.Unlock()

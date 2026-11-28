@@ -108,45 +108,68 @@ func (a *App) writeConnection(agent, secret string) error {
 }
 
 func (a *App) loadDesktopCatalog(agent, expectedSecret string, native bool) error {
-	return a.loadReservedDesktopCatalog(a.reserveDesktopRead(agent, false), expectedSecret, native)
+	_, err := a.loadReservedDesktopCatalogWithNotice(a.reserveDesktopRead(agent, false), expectedSecret, native)
+	return err
 }
 
 func (a *App) loadReservedDesktopCatalog(r desktopRead, expectedSecret string, native bool) error {
+	_, err := a.loadReservedDesktopCatalogWithNotice(r, expectedSecret, native)
+	return err
+}
+
+func (a *App) loadReservedDesktopCatalogWithNotice(r desktopRead, expectedSecret string, native bool) (string, error) {
 	r = a.beginDesktopRead(r, expectedSecret)
 	agent := r.agent
 	var cat *DesktopCatalogPayload
 	var err error
 	if r.secret != "" {
 		cat, err = a.fetchDesktopCatalog(r.secret)
+		if err == nil && cat != nil {
+			decorateCatalogWithPrefs(agent, cat)
+		}
 	}
 	a.connectionMu.Lock()
 	defer a.connectionMu.Unlock()
+	// Check whether this read is still valid before writing native configs,
+	// and clone before mutating so a previously published snapshot is never
+	// written in place while DesktopState() reads a.catalogs.
+	var writeCat *DesktopCatalogPayload
+	latestRead := false
 	current := a.applyDesktopRead(r, native, func(latest bool) {
+		latestRead = latest
 		if err != nil {
 			return
 		}
 		if !latest {
 			// A Models-page read may overtake this native-menu sync. It must
-			// not suppress menu setup; use its newer cached catalog if ready.
+			// not suppress menu setup; use a clone of its newer cached catalog if ready.
 			if newer := a.catalogs[agent]; newer != nil {
-				cat = newer
+				writeCat = cloneDesktopCatalog(newer)
+			} else {
+				writeCat = cloneDesktopCatalog(cat)
 			}
 			return
 		}
+		writeCat = cloneDesktopCatalog(cat)
+	})
+	if !current {
+		return "", nil // stale failures must not replace the current connection's UI
+	}
+	fallbackMsg := ""
+	if err == nil && native && writeCat != nil {
+		fallbackMsg, _ = a.writeDesktopCatalog(agent, r.secret, writeCat)
+	}
+	if err == nil && (latestRead || (native && writeCat != nil)) {
+		a.mu.Lock()
 		if a.catalogs == nil {
 			a.catalogs = make(map[string]*DesktopCatalogPayload)
 		}
-		if cat == nil {
+		if writeCat == nil {
 			delete(a.catalogs, agent)
 		} else {
-			a.catalogs[agent] = cat
+			a.catalogs[agent] = writeCat
 		}
-	})
-	if !current {
-		return nil // stale failures must not replace the current connection's UI
+		a.mu.Unlock()
 	}
-	if err == nil && native && cat != nil {
-		a.writeDesktopCatalog(agent, r.secret, cat)
-	}
-	return err
+	return fallbackMsg, err
 }

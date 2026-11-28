@@ -6,6 +6,8 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
+	"sync/atomic"
 	"testing"
 )
 
@@ -525,5 +527,295 @@ func TestDesktopBalanceMetaUsageAndCatalogLoad(t *testing.T) {
 	}
 	if openedURL == "" {
 		t.Fatalf("expected switch-account to open web URL")
+	}
+}
+
+func TestDesktopSelectModelCnModeAndTierAutoFallback(t *testing.T) {
+	var publishOpus, withdrawCatalog atomic.Bool
+	home := t.TempDir()
+	t.Setenv("RELAY_HOME", home)
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	t.Setenv("APPDATA", filepath.Join(home, "appdata"))
+
+	currentTier := "balanced"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/status":
+			_ = json.NewEncoder(w).Encode(map[string]any{"success": true, "data": map[string]any{}})
+		case "/v1/models":
+			_ = json.NewEncoder(w).Encode(map[string]any{"object": "list", "data": []map[string]any{{"id": "claude-sonnet-5-5"}}})
+		case "/api/install/balance":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"success": true,
+				"data": map[string]any{
+					"balance_cny": "25.00",
+					"tier":        currentTier,
+					"tiers": []map[string]any{
+						{"name": "balanced", "label": "均衡", "recommended": true},
+						{"name": "stable", "label": "优选"},
+					},
+				},
+			})
+		case "/api/install/tier":
+			var req struct {
+				Group string `json:"group"`
+			}
+			_ = json.NewDecoder(r.Body).Decode(&req)
+			currentTier = req.Group
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"success": true,
+				"data": map[string]any{
+					"tier": currentTier,
+					"tiers": []map[string]any{
+						{"name": "balanced", "label": "均衡", "recommended": true},
+						{"name": "stable", "label": "优选"},
+					},
+				},
+			})
+		case "/api/install/catalog":
+			if withdrawCatalog.Load() {
+				_ = json.NewEncoder(w).Encode(map[string]any{
+					"success": true,
+					"data":    DesktopCatalogPayload{},
+				})
+				return
+			}
+			if currentTier == "stable" {
+				// 优选 tier only carries native Claude (no deepseek CN alternative)
+				defaultModel := "claude-sonnet-5-5"
+				if publishOpus.Load() {
+					defaultModel = "claude-opus-4-6"
+				}
+				_ = json.NewEncoder(w).Encode(map[string]any{
+					"success": true,
+					"data": map[string]any{
+						"enabled":       true,
+						"source":        "curated",
+						"version":       1,
+						"agent":         "claude_code",
+						"tier":          "stable",
+						"default_model": defaultModel,
+						"claude_slots": map[string]string{
+							"primary": "claude-sonnet-5-5",
+							"sonnet":  "claude-sonnet-5-5",
+							"opus":    "claude-opus-4-6",
+							"haiku":   "claude-haiku-4-5",
+						},
+						"models": []map[string]any{
+							{"id": "claude-sonnet-5-5", "display_name": "claude-sonnet-5-5", "vendor": "Anthropic", "is_latest": true},
+							{"id": "claude-opus-4-6", "display_name": "claude-opus-4-6", "vendor": "Anthropic", "is_latest": true},
+							{"id": "claude-haiku-4-5", "display_name": "claude-haiku-4-5", "vendor": "Anthropic", "is_latest": true},
+						},
+					},
+				})
+				return
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"success": true,
+				"data": map[string]any{
+					"enabled":       true,
+					"source":        "curated",
+					"version":       1,
+					"agent":         "claude_code",
+					"tier":          "balanced",
+					"default_model": "claude-sonnet-5-5",
+					"claude_slots": map[string]string{
+						"primary": "claude-sonnet-5-5",
+						"sonnet":  "claude-sonnet-5-5",
+						"opus":    "claude-opus-4-6",
+						"haiku":   "claude-haiku-4-5",
+					},
+					"cn_alternatives": []map[string]any{
+						{"id": "deepseek-v3.2", "display_name": "deepseek-v3.2", "vendor": "DeepSeek", "is_cn_alternative": true},
+					},
+					"models": []map[string]any{
+						{"id": "claude-sonnet-5-5", "display_name": "claude-sonnet-5-5", "vendor": "Anthropic", "is_latest": true},
+						{"id": "claude-opus-4-6", "display_name": "claude-opus-4-6", "vendor": "Anthropic", "is_latest": true},
+						{"id": "claude-haiku-4-5", "display_name": "claude-haiku-4-5", "vendor": "Anthropic", "is_latest": true},
+						{"id": "deepseek-v3.2", "display_name": "deepseek-v3.2", "vendor": "DeepSeek", "is_cn_alternative": true},
+					},
+				},
+			})
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	app, _ := testDesktopApp(t, srv)
+	app.env.FindCLI = func(agent string) bool { return true }
+	app.env.Configured = func(agent, origin string) (string, bool) {
+		if agent == "claude" {
+			return "sk-test-select", true
+		}
+		return "", false
+	}
+	readEnv := func() map[string]string {
+		t.Helper()
+		raw, err := os.ReadFile(paths().ClaudeSettings())
+		if err != nil {
+			t.Fatal(err)
+		}
+		var doc struct{ Env map[string]string }
+		if err := json.Unmarshal(raw, &doc); err != nil {
+			t.Fatal(err)
+		}
+		return doc.Env
+	}
+
+	// 1) Switch Claude Code to CN mode -> all 4 slots written to ~/.claude/settings.json
+	if err := app.DesktopAction(DesktopRequest{Action: "select-model", Agent: "claude", Mode: "cn", Model: "deepseek-v3.2"}); err != nil {
+		t.Fatalf("select-model cn failed: %v", err)
+	}
+	env := readEnv()
+	for _, k := range []string{"ANTHROPIC_MODEL", "ANTHROPIC_DEFAULT_SONNET_MODEL", "ANTHROPIC_DEFAULT_OPUS_MODEL", "ANTHROPIC_DEFAULT_HAIKU_MODEL"} {
+		if env[k] != "deepseek-v3.2" {
+			t.Fatalf("expected %s=deepseek-v3.2 in CN mode, got %v", k, env[k])
+		}
+	}
+	st := app.DesktopState()
+	if st.Catalogs["claude"].ClaudeMode != "cn" || st.Catalogs["claude"].ActiveModel != "deepseek-v3.2" {
+		t.Fatalf("unexpected catalog state in CN mode: %+v", st.Catalogs["claude"])
+	}
+
+	// 2) Switch tier to 优选 (stable, no deepseek) -> auto-fallbacks to native 3-slot Claude!
+	if err := app.DesktopAction(DesktopRequest{Action: "switch-tier", Agent: "claude", Tier: "stable"}); err != nil {
+		t.Fatalf("switch-tier stable failed: %v", err)
+	}
+	env2 := readEnv()
+	if env2["ANTHROPIC_MODEL"] != "claude-sonnet-5-5" {
+		t.Fatalf("Claude startup model after fallback = %v, want claude-sonnet-5-5", env2["ANTHROPIC_MODEL"])
+	}
+	if env2["ANTHROPIC_DEFAULT_SONNET_MODEL"] != "claude-sonnet-5-5" ||
+		env2["ANTHROPIC_DEFAULT_OPUS_MODEL"] != "claude-opus-4-6" ||
+		env2["ANTHROPIC_DEFAULT_HAIKU_MODEL"] != "claude-haiku-4-5" {
+		t.Fatalf("expected native 3 slots restored on fallback, got: %+v", env2)
+	}
+	st2 := app.DesktopState()
+	if st2.Catalogs["claude"].ClaudeMode != "native" || st2.Catalogs["claude"].ActiveModel != "claude-sonnet-5-5" {
+		t.Fatalf("expected catalog state fell back to native, got: %+v", st2.Catalogs["claude"])
+	}
+	if !strings.Contains(st2.View.Notice, "已自动切回本档最新原版") {
+		t.Fatalf("expected fallback notice in View.Notice, got: %q", st2.View.Notice)
+	}
+
+	// Explicitly choosing the current catalog default keeps that choice on the next sync.
+	if err := app.DesktopAction(DesktopRequest{Action: "select-model", Agent: "claude", Model: "claude-sonnet-5-5"}); err != nil {
+		t.Fatal(err)
+	}
+	publishOpus.Store(true)
+	app.syncDesktopCatalog("claude", "sk-test-select")
+	if got := readEnv()["ANTHROPIC_MODEL"]; got != "claude-sonnet-5-5" {
+		t.Fatalf("Claude startup model after catalog update = %q, want explicitly selected Sonnet", got)
+	}
+
+	if err := app.DesktopAction(DesktopRequest{Action: "select-model", Agent: "claude", Mode: "native"}); err != nil {
+		t.Fatal(err)
+	}
+	env = readEnv()
+	if env["ANTHROPIC_MODEL"] != "claude-opus-4-6" ||
+		env["ANTHROPIC_DEFAULT_SONNET_MODEL"] != "claude-sonnet-5-5" ||
+		env["ANTHROPIC_DEFAULT_OPUS_MODEL"] != "claude-opus-4-6" ||
+		env["ANTHROPIC_DEFAULT_HAIKU_MODEL"] != "claude-haiku-4-5" {
+		t.Fatalf("expected the updated default with independent aliases, got: %+v", env)
+	}
+
+	withdrawCatalog.Store(true)
+	app.syncDesktopCatalog("claude", "sk-test-select")
+	env = readEnv()
+	for _, key := range []string{"ANTHROPIC_MODEL", "ANTHROPIC_DEFAULT_SONNET_MODEL", "ANTHROPIC_DEFAULT_OPUS_MODEL", "ANTHROPIC_DEFAULT_HAIKU_MODEL"} {
+		if _, remains := env[key]; remains {
+			t.Errorf("%s survived catalog withdrawal", key)
+		}
+	}
+}
+
+func TestDesktopSelectModelWriteFailureAndConcurrentCatalogRace(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/install/catalog":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"success": true,
+				"data": map[string]any{
+					"enabled":       true,
+					"version":       1,
+					"agent":         "codex",
+					"tier":          "balanced",
+					"default_model": "gpt-6.2-sol",
+					"models": []map[string]any{
+						{"id": "gpt-6.2-sol", "display_name": "GPT 6.2 Sol", "vendor": "OpenAI", "visibility": "list"},
+						{"id": "gpt-6.2-astra", "display_name": "GPT 6.2 Astra", "vendor": "OpenAI", "visibility": "list"},
+					},
+				},
+			})
+		default:
+			_ = json.NewEncoder(w).Encode(map[string]any{"success": true, "data": map[string]any{}})
+		}
+	}))
+	defer srv.Close()
+
+	app, _ := testDesktopApp(t, srv)
+	app.env.FindCLI = func(agent string) bool { return true }
+	app.env.Configured = func(agent, origin string) (string, bool) {
+		if agent == "codex" {
+			return "sk-test-codex-writefail", true
+		}
+		return "", false
+	}
+
+	// #3: Make ~/.codex/config.toml a directory so WriteCodex MUST fail.
+	// select-model must return an error and NOT persist model-prefs.json or claim success.
+	if err := os.MkdirAll(paths().CodexConfig(), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := app.DesktopAction(DesktopRequest{Action: "select-model", Agent: "codex", Model: "gpt-6.2-astra"}); err == nil {
+		t.Fatalf("expected select-model to fail when config.toml cannot be written")
+	}
+	if prefs := loadModelPrefs(); prefs.CodexModel != "" {
+		t.Fatalf("expected model-prefs.json unchanged after write failure, got %+v", prefs)
+	}
+
+	// Restore writable config.toml and verify #6: concurrent DesktopState() + syncDesktopCatalog has zero DATA RACE.
+	if err := os.RemoveAll(paths().CodexConfig()); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := 0; i < 60; i++ {
+			st := app.DesktopState()
+			_, _ = json.Marshal(st)
+		}
+	}()
+	for i := 0; i < 10; i++ {
+		app.syncDesktopCatalog("codex", "sk-test-codex-writefail")
+	}
+	<-done
+}
+
+func TestResolveClaudeSelectionRespectsExplicitServerDefault(t *testing.T) {
+	// #10: Admin published Opus as default_model while keeping Sonnet in claude_slots.
+	cat := &DesktopCatalogPayload{
+		Enabled:      true,
+		DefaultModel: "claude-opus-4-6",
+		ClaudeSlots: &DesktopClaudeSlots{
+			Primary: "claude-sonnet-5-5",
+			Sonnet:  "claude-sonnet-5-5",
+			Opus:    "claude-opus-4-6",
+			Haiku:   "claude-haiku-4-5",
+		},
+		Models: []DesktopCatalogModel{
+			{ID: "claude-opus-4-6"},
+			{ID: "claude-sonnet-5-5"},
+			{ID: "claude-haiku-4-5"},
+		},
+	}
+	sel := resolveClaudeSelection(cat, modelPrefs{})
+	if sel.mode != "native" || sel.activeModel != "claude-opus-4-6" {
+		t.Fatalf("expected admin-published default_model claude-opus-4-6 respected, got %+v", sel)
+	}
+	if sel.sonnet != "claude-sonnet-5-5" || sel.opus != "claude-opus-4-6" || sel.haiku != "claude-haiku-4-5" {
+		t.Fatalf("expected 3 slots preserved alongside pinned Opus default, got %+v", sel)
 	}
 }

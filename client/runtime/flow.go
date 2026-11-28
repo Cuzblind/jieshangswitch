@@ -287,22 +287,113 @@ func (a *App) fetchDesktopCatalog(secret string) (*DesktopCatalogPayload, error)
 // - On transient fetch error: preserves the previously written valid catalog.
 // - On explicit withdrawal (cat.Enabled == false) or zero authorized models: removes managed catalog entries.
 func (a *App) syncDesktopCatalog(agent, secret string) {
-	_ = a.loadDesktopCatalog(agent, secret, true)
+	_, _ = a.loadReservedDesktopCatalogWithNotice(a.reserveDesktopRead(agent, false), secret, true)
 }
 
-func (a *App) writeDesktopCatalog(agent, secret string, cat *DesktopCatalogPayload) {
+func (a *App) syncDesktopCatalogWithNotice(agent, secret string) string {
+	notice, _ := a.loadReservedDesktopCatalogWithNotice(a.reserveDesktopRead(agent, false), secret, true)
+	return notice
+}
+
+func cloneDesktopCatalog(cat *DesktopCatalogPayload) *DesktopCatalogPayload {
+	if cat == nil {
+		return nil
+	}
+	cp := *cat
+	if cat.ClaudeSlots != nil {
+		slots := *cat.ClaudeSlots
+		cp.ClaudeSlots = &slots
+	}
+	if len(cat.Models) > 0 {
+		cp.Models = append([]DesktopCatalogModel(nil), cat.Models...)
+	}
+	if len(cat.CnAlternatives) > 0 {
+		cp.CnAlternatives = append([]DesktopCatalogModel(nil), cat.CnAlternatives...)
+	}
+	return &cp
+}
+
+func (a *App) writeDesktopCatalog(agent, secret string, cat *DesktopCatalogPayload) (string, error) {
+	return a.writeDesktopCatalogWithPrefs(agent, secret, cat, loadModelPrefs(), true)
+}
+
+func (a *App) writeDesktopCatalogWithPrefs(agent, secret string, cat *DesktopCatalogPayload, prefs modelPrefs, persistFallback bool) (string, error) {
 	switch agent {
 	case "claude":
-		_ = configureDesktopGUIWithCatalog(agent, a.origin, secret, cat)
+		if !cat.Enabled || len(cat.Models) == 0 {
+			_ = configureDesktopGUIWithCatalog(agent, a.origin, secret, cat)
+			if _, err := os.Stat(paths().ClaudeSettings()); err == nil {
+				if err := paths().WriteClaude(core.ClaudeOpts{
+					Origin:       a.origin,
+					Secret:       secret,
+					ManageModels: true,
+				}); err != nil {
+					return "", err
+				}
+			}
+			return "", nil
+		}
+		sel := resolveClaudeSelection(cat, prefs)
+		fallbackMsg := ""
+		if sel.fellBack {
+			if persistFallback {
+				prefs.ClaudeMode = "native"
+				prefs.ClaudeModel = ""
+				_ = saveModelPrefs(prefs)
+			}
+			if sel.activeModel != "" {
+				fallbackMsg = fmt.Sprintf("原选模型（%s）在当前线路不可用，已自动切回本档最新原版 %s。", sel.prevModel, sel.activeModel)
+			}
+		}
+		if err := paths().WriteClaude(core.ClaudeOpts{
+			Origin:       a.origin,
+			Secret:       secret,
+			Model:        sel.activeModel,
+			SonnetModel:  sel.sonnet,
+			OpusModel:    sel.opus,
+			HaikuModel:   sel.haiku,
+			ManageModels: true,
+		}); err != nil {
+			return "", err
+		}
+		cat.ClaudeMode = sel.mode
+		cat.ActiveModel = sel.activeModel
+		guiCat := *cat
+		if sel.activeModel != "" {
+			guiCat.DefaultModel = sel.activeModel
+		}
+		_ = configureDesktopGUIWithCatalog(agent, a.origin, secret, &guiCat)
+		return fallbackMsg, nil
 	case "codex":
 		if !cat.Enabled || len(cat.Models) == 0 {
-			_ = paths().WriteCodex(core.CodexOpts{
+			if err := paths().WriteCodex(core.CodexOpts{
 				Origin:       a.origin,
 				Secret:       secret,
 				Shell:        os.Getenv("SHELL"),
 				ClearCatalog: true,
-			})
-			return
+				SkipShellEnv: a.env.GOOS == "windows",
+			}); err != nil {
+				return "", err
+			}
+			return "", nil
+		}
+		targetModel := cat.DefaultModel
+		forceModel := false
+		fallbackMsg := ""
+		if saved := strings.TrimSpace(prefs.CodexModel); saved != "" {
+			if catalogContainsModel(cat, saved) {
+				targetModel = saved
+				forceModel = true
+			} else {
+				if persistFallback {
+					prefs.CodexModel = ""
+					_ = saveModelPrefs(prefs)
+				}
+				forceModel = true
+				if targetModel != "" {
+					fallbackMsg = fmt.Sprintf("原选模型（%s）在当前线路不可用，已自动切回本档最新主力 %s。", saved, targetModel)
+				}
+			}
 		}
 		catalogModels := make([]core.CatalogModel, 0, len(cat.Models))
 		allowed := make([]string, 0, len(cat.Models))
@@ -312,18 +403,30 @@ func (a *App) writeDesktopCatalog(agent, secret string, cat *DesktopCatalogPaylo
 				DisplayName:   m.DisplayName,
 				Vendor:        m.Vendor,
 				ContextWindow: m.ContextWindow,
+				Visibility:    m.Visibility,
 			})
 			allowed = append(allowed, m.ID)
 		}
-		_ = paths().WriteCodex(core.CodexOpts{
+		if err := paths().WriteCodex(core.CodexOpts{
 			Origin:        a.origin,
 			Secret:        secret,
-			Model:         cat.DefaultModel,
+			Model:         targetModel,
+			ForceModel:    forceModel,
 			Shell:         os.Getenv("SHELL"),
 			CatalogModels: catalogModels,
 			AllowedModels: allowed,
-		})
+			SkipShellEnv:  a.env.GOOS == "windows",
+		}); err != nil {
+			return "", err
+		}
+		if cur := configuredCodexModel(); cur != "" && catalogContainsModel(cat, cur) {
+			cat.ActiveModel = cur
+		} else {
+			cat.ActiveModel = targetModel
+		}
+		return fallbackMsg, nil
 	}
+	return "", nil
 }
 
 type onboardingBackup struct {
@@ -463,7 +566,10 @@ func (a *App) testChat(agent string) (string, time.Duration, error) {
 		if len(cat.Models) == 0 {
 			return "", 0, errors.New("当前线路暂无授权模型，请切换线路或联系管理员")
 		}
-		if cat.DefaultModel != "" {
+		decorateCatalogWithPrefs(agent, cat)
+		if cat.ActiveModel != "" {
+			model = cat.ActiveModel
+		} else if cat.DefaultModel != "" {
 			model = cat.DefaultModel
 		} else if cat.Models[0].ID != "" {
 			model = cat.Models[0].ID
@@ -891,6 +997,7 @@ func (a *App) restoreConnections() (bool, error) {
 	a.connectionMu.Lock()
 	defer a.connectionMu.Unlock()
 	a.invalidateConnectionData()
+	clearModelPrefs()
 	used, err := a.env.Restore(true)
 	if err != nil {
 		return used, err

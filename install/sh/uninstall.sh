@@ -40,7 +40,7 @@ strip_marked_file() {
   [ -f "$path" ] || return 0
   # only rewrite files that carry our marks
   if ! grep -qxF -- "$start" "$path"; then
-    if [ -z "$extra_sed" ] || ! grep -Eq '^model_provider[[:space:]]*=[[:space:]]*"jieshangai"[[:space:]]*$|^model[[:space:]]*=.*# jieshangai-model$' "$path"; then
+    if [ -z "$extra_sed" ] || ! grep -Eq '^model_provider[[:space:]]*=[[:space:]]*"jieshangai"[[:space:]]*$|^model[[:space:]]*=.*# jieshangai-model$|^model_catalog_json[[:space:]]*=.*# jieshangai-catalog$' "$path"; then
       return 0
     fi
   fi
@@ -78,6 +78,10 @@ keys = (
     "ANTHROPIC_BASE_URL",
     "ANTHROPIC_AUTH_TOKEN",
     "ANTHROPIC_API_KEY",
+    "ANTHROPIC_MODEL",
+    "ANTHROPIC_DEFAULT_SONNET_MODEL",
+    "ANTHROPIC_DEFAULT_OPUS_MODEL",
+    "ANTHROPIC_DEFAULT_HAIKU_MODEL",
     "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC",
     "DISABLE_TELEMETRY",
     "DISABLE_ERROR_REPORTING",
@@ -121,7 +125,7 @@ PY
 clean_jieshangai() {
   local root=$1 dir
   dir="$root/.jieshangai"
-  rm -f "$dir/codex.env" "$dir/install-stamp.json" "$dir/install-error.log"
+  rm -f "$dir/codex.env" "$dir/codex-catalog.json" "$dir/model-prefs.json" "$dir/install-stamp.json" "$dir/install-error.log"
 }
 
 file_sha() {
@@ -191,7 +195,7 @@ main() {
     clean_claude "$root/.claude/settings.json"
   fi
   strip_marked_file "$root/.codex/config.toml" "$MARKER_START" "$MARKER_END" \
-    '/^model_provider[[:space:]]*=[[:space:]]*"jieshangai"[[:space:]]*$/d; /^model[[:space:]]*=.*# jieshangai-model$/d'
+    '/^model_provider[[:space:]]*=[[:space:]]*"jieshangai"[[:space:]]*$/d; /^model[[:space:]]*=.*# jieshangai-model$/d; /^model_catalog_json[[:space:]]*=.*# jieshangai-catalog$/d'
   strip_marked_file "$root/.zshrc" "$RC_START" "$RC_END"
   strip_marked_file "$root/.bashrc" "$RC_START" "$RC_END"
   clean_jieshangai "$root"

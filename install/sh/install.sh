@@ -31,6 +31,7 @@ MARKER_END='# jieshangai-provider-end'
 RC_START='# jieshangai-connection-start'
 RC_END='# jieshangai-connection-end'
 MODEL_TAG='# jieshangai-model'
+CATALOG_TAG='# jieshangai-catalog'
 MANIFEST_HEADER='# jieshangai backup manifest v1'
 REPORT_TOKEN=''
 REPORT_ORIGIN=''
@@ -87,6 +88,147 @@ claim_secret() {
 # test_connection <origin> <secret>
 test_connection() {
   curl -fsS -m 20 -o /dev/null -H "Authorization: Bearer $2" "$1/v1/models" 2>/dev/null
+}
+
+# fetch_install_catalog <origin> <secret> <agent> <root>: best-effort live catalog fetch
+# Sets CATALOG_STATUS ('ok' | 'withdrawn' | ''), CATALOG_CLAUDE_PRIMARY, CATALOG_CLAUDE_SONNET,
+# CATALOG_CLAUDE_OPUS, CATALOG_CLAUDE_HAIKU, CATALOG_CODEX_MODEL, CATALOG_CODEX_PATH.
+# Network failures leave CATALOG_STATUS='' (preserve existing config); explicit server
+# withdrawal (enabled=false or empty models) sets CATALOG_STATUS='withdrawn' so stale
+# managed catalogs/slots are cleared on reinstall.
+CATALOG_STATUS=''
+CATALOG_CLAUDE_PRIMARY=''
+CATALOG_CLAUDE_SONNET=''
+CATALOG_CLAUDE_OPUS=''
+CATALOG_CLAUDE_HAIKU=''
+CATALOG_CODEX_MODEL=''
+CATALOG_CODEX_PATH=''
+
+fetch_install_catalog() {
+  local origin=$1 secret=$2 agent=$3 root=$4 raw='' parsed=''
+  claim_mode || return 0
+  have_cmd curl && have_cmd python3 || return 0
+  raw=$(curl -fsS -m 10 -H "Authorization: Bearer $secret" "$origin/api/install/catalog" 2>/dev/null) || return 0
+  [ -n "$raw" ] || return 0
+  parsed=$(RELAY_CATALOG_RAW="$raw" RELAY_CATALOG_AGENT="$agent" RELAY_CATALOG_ROOT="$root" python3 - <<'PY' 2>/dev/null
+import json, os, re, sys
+
+raw = os.environ.get("RELAY_CATALOG_RAW", "")
+agent = os.environ.get("RELAY_CATALOG_AGENT", "")
+root = os.environ.get("RELAY_CATALOG_ROOT", "")
+re_model = re.compile(r"^[A-Za-z0-9._:/-]+$")
+
+def clean(v):
+    s = (v or "").strip() if isinstance(v, str) else ""
+    return s if s and re_model.match(s) else ""
+
+try:
+    payload = json.loads(raw)
+except Exception:
+    sys.exit(0)
+
+if not isinstance(payload, dict) or not payload.get("success"):
+    sys.exit(0)
+data = payload.get("data")
+if not isinstance(data, dict):
+    sys.exit(0)
+models = data.get("models")
+if not data.get("enabled") or not isinstance(models, list) or not models:
+    print("CATALOG_STATUS=withdrawn")
+    sys.exit(0)
+
+print("CATALOG_STATUS=ok")
+if agent == "claude":
+    slots = data.get("claude_slots") if isinstance(data.get("claude_slots"), dict) else {}
+    primary = clean(data.get("default_model")) or clean(slots.get("primary"))
+    if not primary:
+        primary = next(filter(None, (clean(item.get("id")) for item in models if isinstance(item, dict))), "")
+    sonnet = clean(slots.get("sonnet")) or primary
+    opus = clean(slots.get("opus")) or sonnet or primary
+    haiku = clean(slots.get("haiku")) or sonnet or primary
+    if primary and not primary.lower().startswith("claude"):
+        sonnet = opus = haiku = primary
+    # The aliases apply to named selections. Claude Code also needs the startup model.
+    print(f"CLAUDE_PRIMARY={primary}")
+    print(f"CLAUDE_SONNET={sonnet}")
+    print(f"CLAUDE_OPUS={opus}")
+    print(f"CLAUDE_HAIKU={haiku}")
+elif agent == "codex":
+    default_model = clean(data.get("default_model"))
+    entries = []
+    default_levels = [
+        {"effort": "low", "description": "Faster responses with lighter reasoning"},
+        {"effort": "medium", "description": "Balanced speed and reasoning depth"},
+        {"effort": "high", "description": "Greater reasoning depth for complex tasks"},
+    ]
+    for i, item in enumerate(models):
+        if not isinstance(item, dict):
+            continue
+        mid = clean(item.get("id"))
+        if not mid:
+            continue
+        name = (item.get("display_name") or "").strip() if isinstance(item.get("display_name"), str) else ""
+        if not name:
+            name = mid
+        ctx = item.get("context_window")
+        if not isinstance(ctx, int) or ctx <= 0:
+            ctx = 200000
+        vis = (item.get("visibility") or "").strip().lower() if isinstance(item.get("visibility"), str) else ""
+        if vis != "hide":
+            vis = "list"
+        vendor = (item.get("vendor") or "").strip() if isinstance(item.get("vendor"), str) else ""
+        entry = {
+            "slug": mid,
+            "display_name": name,
+            "default_reasoning_level": "medium",
+            "supported_reasoning_levels": default_levels,
+            "shell_type": "shell_command",
+            "visibility": vis,
+            "supported_in_api": True,
+            "priority": i,
+            "base_instructions": "",
+            "supports_reasoning_summaries": True,
+            "support_verbosity": False,
+            "truncation_policy": {"mode": "tokens", "limit": 10000},
+            "supports_parallel_tool_calls": True,
+            "context_window": ctx,
+            "experimental_supported_tools": [],
+        }
+        if vendor:
+            entry["description"] = vendor + " via 接上AI"
+        entries.append(entry)
+    cat_path = ""
+    if entries and root:
+        site_dir = os.path.join(root, ".jieshangai")
+        os.makedirs(site_dir, mode=0o700, exist_ok=True)
+        cat_path = os.path.join(site_dir, "codex-catalog.json")
+        tmp = cat_path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as fh:
+            json.dump({"models": entries}, fh, ensure_ascii=False, indent=2)
+            fh.write("\n")
+        os.chmod(tmp, 0o600)
+        os.replace(tmp, cat_path)
+    print(f"CODEX_MODEL={default_model}")
+    print(f"CODEX_PATH={cat_path}")
+PY
+  ) || return 0
+  local line k v
+  while IFS= read -r line; do
+    k=${line%%=*}
+    v=${line#*=}
+    case "$k" in
+      CATALOG_STATUS) CATALOG_STATUS=$v ;;
+      CLAUDE_PRIMARY) CATALOG_CLAUDE_PRIMARY=$v ;;
+      CLAUDE_SONNET) CATALOG_CLAUDE_SONNET=$v ;;
+      CLAUDE_OPUS) CATALOG_CLAUDE_OPUS=$v ;;
+      CLAUDE_HAIKU) CATALOG_CLAUDE_HAIKU=$v ;;
+      CODEX_MODEL) CATALOG_CODEX_MODEL=$v ;;
+      CODEX_PATH) CATALOG_CODEX_PATH=$v ;;
+    esac
+  done <<<"$parsed"
+  if [ "$CATALOG_STATUS" = 'withdrawn' ] && [ "$agent" = 'codex' ] && [ -n "$root" ]; then
+    rm -f "$root/.jieshangai/codex-catalog.json"
+  fi
 }
 
 clear_log() {
@@ -333,11 +475,21 @@ write_claude_settings() {
     if ! RELAY_SETTINGS_PATH="$path" \
       RELAY_SETTINGS_BASE="$base" \
       RELAY_SETTINGS_SECRET="$secret" \
+      RELAY_SETTINGS_CATALOG_STATUS="${CATALOG_STATUS:-}" \
+      RELAY_SETTINGS_PRIMARY="${CATALOG_CLAUDE_PRIMARY:-}" \
+      RELAY_SETTINGS_SONNET="${CATALOG_CLAUDE_SONNET:-}" \
+      RELAY_SETTINGS_OPUS="${CATALOG_CLAUDE_OPUS:-}" \
+      RELAY_SETTINGS_HAIKU="${CATALOG_CLAUDE_HAIKU:-}" \
       python3 - <<'PY'
 import json, os, sys
 path = os.environ["RELAY_SETTINGS_PATH"]
 base = os.environ["RELAY_SETTINGS_BASE"]
 secret = os.environ["RELAY_SETTINGS_SECRET"]
+cat_status = os.environ.get("RELAY_SETTINGS_CATALOG_STATUS", "").strip()
+m_primary = os.environ.get("RELAY_SETTINGS_PRIMARY", "").strip()
+m_sonnet = os.environ.get("RELAY_SETTINGS_SONNET", "").strip()
+m_opus = os.environ.get("RELAY_SETTINGS_OPUS", "").strip()
+m_haiku = os.environ.get("RELAY_SETTINGS_HAIKU", "").strip()
 try:
     data = {}
     if os.path.isfile(path) and os.path.getsize(path) > 0:
@@ -354,6 +506,17 @@ try:
     env["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"] = "1"
     env["DISABLE_TELEMETRY"] = "1"
     env["DISABLE_ERROR_REPORTING"] = "1"
+    if cat_status == "withdrawn":
+        for k in ("ANTHROPIC_MODEL", "ANTHROPIC_DEFAULT_SONNET_MODEL", "ANTHROPIC_DEFAULT_OPUS_MODEL", "ANTHROPIC_DEFAULT_HAIKU_MODEL"):
+            env.pop(k, None)
+    elif m_primary:
+        env["ANTHROPIC_MODEL"] = m_primary
+        if m_sonnet:
+            env["ANTHROPIC_DEFAULT_SONNET_MODEL"] = m_sonnet
+        if m_opus:
+            env["ANTHROPIC_DEFAULT_OPUS_MODEL"] = m_opus
+        if m_haiku:
+            env["ANTHROPIC_DEFAULT_HAIKU_MODEL"] = m_haiku
     data["env"] = env
     tmp = path + ".tmp"
     with open(tmp, "w", encoding="utf-8") as fh:
@@ -415,8 +578,41 @@ insert_model_line() {
   '
 }
 
+insert_catalog_line() {
+  printf '%s\n' "$1" | awk -v catline="$2" '
+    BEGIN { in_table = 0; replaced = 0 }
+    /^\[/ { in_table = 1 }
+    !in_table && !replaced && /^model_catalog_json[[:space:]]*=/ {
+      lines[++n] = catline
+      replaced = 1
+      next
+    }
+    { lines[++n] = $0 }
+    END {
+      if (replaced) {
+        for (i = 1; i <= n; i++) print lines[i]
+        exit
+      }
+      insert_at = 0
+      for (i = 1; i <= n; i++) {
+        if (lines[i] ~ /^\[/) break
+        if (lines[i] ~ /^(model|model_provider)[[:space:]]*=/) insert_at = i
+      }
+      if (insert_at == 0) {
+        print catline
+        for (i = 1; i <= n; i++) print lines[i]
+      } else {
+        for (i = 1; i <= n; i++) {
+          print lines[i]
+          if (i == insert_at) print catline
+        }
+      }
+    }
+  '
+}
+
 write_codex_config() {
-  local path=$1 base=$2 model=$3 dir text tmp
+  local path=$1 base=$2 model=$3 catalog_path=${4:-} dir text tmp
   dir=$(dirname "$path")
   mkdir -p "$dir"
   text=''
@@ -443,6 +639,13 @@ $text"
     fi
   elif ! printf '%s\n' "$text" | grep -Eq '^model[[:space:]]*='; then
     text=$(insert_model_line "$text" "$DEFAULT_CODEX_MODEL")
+  fi
+  if [ -n "$catalog_path" ]; then
+    local qcat
+    qcat=$(json_quote "$catalog_path")
+    text=$(insert_catalog_line "$text" "model_catalog_json = ${qcat} ${CATALOG_TAG}")
+  elif [ "${CATALOG_STATUS:-}" = 'withdrawn' ]; then
+    text=$(printf '%s\n' "$text" | sed -E '/^model_catalog_json[[:space:]]*=.*# jieshangai-catalog$/d')
   fi
   tmp=$(mktemp "$dir/.config.XXXXXX")
   {
@@ -694,6 +897,7 @@ main() {
 
   report 3 running
   say '正在把连接写好……'
+  fetch_install_catalog "$origin" "$secret" "$agent" "$root"
   if [ "$agent" = 'claude' ]; then
     if ! write_claude_settings "$root/.claude/settings.json" "$origin" "$secret"; then
       say '写连接的时候出错了。回到网页看看下一步，或打开帮助页联系我们。'
@@ -711,7 +915,10 @@ main() {
         fi
         ;;
     esac
-    if ! write_codex_config "$root/.codex/config.toml" "$origin/v1" "$model"; then
+    if [ -z "$model" ] && [ -n "${CATALOG_CODEX_MODEL:-}" ]; then
+      model=$CATALOG_CODEX_MODEL
+    fi
+    if ! write_codex_config "$root/.codex/config.toml" "$origin/v1" "$model" "${CATALOG_CODEX_PATH:-}"; then
       log_code 'config-write-failed'
       say '写连接的时候出错了。回到网页看看下一步，或打开帮助页联系我们。'
       exit 1

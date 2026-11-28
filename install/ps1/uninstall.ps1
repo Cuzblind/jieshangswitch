@@ -77,6 +77,7 @@ function Remove-ProviderLine([string]$Text) {
     $t = $line.TrimEnd("`r")
     if ($t -match '^\s*model_provider\s*=\s*"jieshangai"\s*$') { continue }
     if ($t -match '^model[ \t]*=.*# jieshangai-model$') { continue }
+    if ($t -match '^model_catalog_json[ \t]*=.*# jieshangai-catalog$') { continue }
     $out.Add($t) | Out-Null
   }
   return ($out -join "`n")
@@ -90,7 +91,7 @@ function Update-MarkedFile([string]$Path, [string]$Start, [string]$End, [bool]$D
   foreach ($l in @(Split-TextLines $Text)) {
     $t = $l.TrimEnd("`r")
     if ($t -eq $Start) { $marked = $true; break }
-    if ($DropProvider -and ($t -match '^\s*model_provider\s*=\s*"jieshangai"\s*$' -or $t -match '^model[ \t]*=.*# jieshangai-model$')) { $marked = $true; break }
+    if ($DropProvider -and ($t -match '^\s*model_provider\s*=\s*"jieshangai"\s*$' -or $t -match '^model[ \t]*=.*# jieshangai-model$' -or $t -match '^model_catalog_json[ \t]*=.*# jieshangai-catalog$')) { $marked = $true; break }
   }
   if (-not $marked) { return }
   $text = Remove-MarkedBlock $text $Start $End
@@ -109,6 +110,10 @@ function Remove-ClaudeKeys([string]$Path) {
     'ANTHROPIC_BASE_URL',
     'ANTHROPIC_AUTH_TOKEN',
     'ANTHROPIC_API_KEY',
+    'ANTHROPIC_MODEL',
+    'ANTHROPIC_DEFAULT_SONNET_MODEL',
+    'ANTHROPIC_DEFAULT_OPUS_MODEL',
+    'ANTHROPIC_DEFAULT_HAIKU_MODEL',
     'CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC',
     'DISABLE_TELEMETRY',
     'DISABLE_ERROR_REPORTING'
@@ -154,7 +159,7 @@ function Remove-PersistentToolPath {
 
 function Remove-SiteFiles([string]$Root) {
   $dir = Join-Path $Root '.jieshangai'
-  foreach ($name in @('codex.env', 'install-stamp.json', 'install-error.log')) {
+  foreach ($name in @('codex.env', 'codex-catalog.json', 'model-prefs.json', 'install-stamp.json', 'install-error.log')) {
     $path = Join-Path $dir $name
     if (Test-Path -LiteralPath $path) {
       Remove-Item -LiteralPath $path -Force

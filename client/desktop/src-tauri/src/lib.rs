@@ -63,6 +63,8 @@ async fn desktop_action(
     mcp: Option<policy::McpServer>,
     skill_dir: Option<String>,
     tier: Option<String>,
+    model: Option<String>,
+    mode: Option<String>,
     range: Option<String>,
     work_dir: Option<String>,
 ) -> Result<Value, String> {
@@ -126,6 +128,14 @@ async fn desktop_action(
     if tier.len() > 32 {
         return Err("线路名称无效".into());
     }
+    let model = model.unwrap_or_default();
+    if model.len() > 128 {
+        return Err("模型名称无效".into());
+    }
+    let mode = mode.unwrap_or_default();
+    if mode.len() > 16 {
+        return Err("模型模式无效".into());
+    }
     let range = range.unwrap_or_default();
     if range.len() > 16 {
         return Err("时间范围无效".into());
@@ -153,6 +163,8 @@ async fn desktop_action(
             "skillDir": skill_dir,
             "skillZip": skill_zip,
             "tier": tier,
+            "model": model,
+            "mode": mode,
             "range": range,
             "workDir": work_dir,
         }))

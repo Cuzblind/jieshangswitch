@@ -14,6 +14,7 @@ const api = vi.hoisted(() => ({
   appCancel: vi.fn(),
   appProgress: vi.fn(),
   switchTier: vi.fn(),
+  selectModel: vi.fn(),
   usage: vi.fn(),
   catalog: vi.fn(),
   setWorkDir: vi.fn(),
@@ -23,6 +24,7 @@ vi.mock("./lib/desktop", async (original) => ({
   desktopState: api.state,
   desktopAction: api.action,
   desktopSwitchTier: api.switchTier,
+  desktopSelectModel: api.selectModel,
   desktopUsage: api.usage,
   desktopCatalog: api.catalog,
   desktopSetWorkDir: api.setWorkDir,
@@ -658,5 +660,56 @@ describe("desktop assistant flow", () => {
 
     await userEvent.click(screen.getByTitle("点击更新至 0.2.0-beta.12"));
     expect(await screen.findByRole("dialog")).toBeInTheDocument();
+  });
+
+  it("switches Claude between native and CN mode on home card and sets default model on Models page", async () => {
+    const initialCatalog = {
+      enabled: true,
+      source: "curated",
+      version: 1,
+      agent: "claude_code",
+      tier: "stable",
+      default_model: "claude-sonnet-5-5",
+      active_model: "claude-sonnet-5-5",
+      claude_mode: "native",
+      cn_alternatives: [
+        { id: "deepseek-v3.2", display_name: "DeepSeek V3.2", vendor: "DeepSeek", is_cn_alternative: true },
+        { id: "glm-5.3", display_name: "GLM 5.3", vendor: "Zhipu", is_cn_alternative: true },
+      ],
+      models: [
+        { id: "claude-sonnet-5-5", display_name: "Claude Sonnet 5.5", vendor: "Anthropic", is_latest: true, role_label: "日常主力" },
+        { id: "deepseek-v3.2", display_name: "DeepSeek V3.2", vendor: "DeepSeek", is_cn_alternative: true, role_label: "国模省钱" },
+        { id: "glm-5.3", display_name: "GLM 5.3", vendor: "Zhipu", is_cn_alternative: true, role_label: "国模省钱" },
+      ],
+    };
+    const withCatalog: DesktopState = {
+      ...fixture(),
+      catalogs: { claude: initialCatalog },
+    };
+    const afterCn: DesktopState = {
+      ...withCatalog,
+      view: { screen: "home", agent: "claude", notice: "已将 Claude Code 默认模型切换为 国产省钱平替（deepseek-v3.2），新开的会话立即生效。" },
+      catalogs: { claude: { ...initialCatalog, active_model: "deepseek-v3.2", claude_mode: "cn" } },
+    };
+    api.state.mockResolvedValue(withCatalog);
+    api.catalog.mockResolvedValue(afterCn);
+    api.selectModel.mockResolvedValue(afterCn);
+
+    render(<App />);
+    const claudeCard = await screen.findByRole("article", { name: "Claude Code" });
+    await userEvent.click(within(claudeCard).getByRole("button", { name: "国产省钱" }));
+    expect(api.selectModel).toHaveBeenCalledWith("claude", { mode: "cn", model: "deepseek-v3.2" });
+
+    // Inline multi-CN switcher lets user pick glm-5.3 directly from the home card
+    await userEvent.click(within(claudeCard).getByRole("button", { name: "glm-5.3" }));
+    expect(api.selectModel).toHaveBeenLastCalledWith("claude", { mode: "cn", model: "glm-5.3" });
+
+    // Navigate to Models page: verify 优选线路 (not 稳定线路) and 设为默认 button works
+    await userEvent.click(screen.getByRole("button", { name: "可用模型" }));
+    expect(await screen.findByText("优选线路")).toBeInTheDocument();
+    expect(screen.queryByText("稳定线路")).toBeNull();
+    const setDefaultBtns = screen.getAllByRole("button", { name: "设为默认" });
+    await userEvent.click(setDefaultBtns[0]);
+    expect(api.selectModel).toHaveBeenLastCalledWith("claude", { model: "claude-sonnet-5-5", mode: undefined });
   });
 });
