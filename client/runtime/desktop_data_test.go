@@ -2,6 +2,7 @@ package clientruntime
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -10,7 +11,28 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"jieshangai/client/core"
 )
+
+// Exercise the request ordering against real Claude settings and backups in the
+// test home. The installer itself is covered by the native engine tests.
+func testClaudeReadApp(t *testing.T, gw *httptest.Server) *App {
+	t.Helper()
+	a, home := testDesktopApp(t, gw)
+	p := core.Paths{Root: home}
+	a.env.Write = func(agent, origin, secret string) error {
+		if agent != "claude" {
+			return fmt.Errorf("unexpected agent in Claude read test: %s", agent)
+		}
+		return p.WriteClaude(core.ClaudeOpts{Origin: origin, Secret: secret})
+	}
+	a.env.Restore = func(confirm bool) (bool, error) {
+		result, err := p.Restore(core.RestoreOpts{Confirm: confirm})
+		return result.UsedBackup, err
+	}
+	return a
+}
 
 func waitDesktopRead(t *testing.T, done <-chan struct{}) {
 	t.Helper()
@@ -39,7 +61,7 @@ func TestDesktopAdmittedReadsRejectDelayedStarts(t *testing.T) {
 					}
 				}))
 				defer gw.Close()
-				a, _ := testDesktopApp(t, gw)
+				a := testClaudeReadApp(t, gw)
 				if err := a.env.Write("claude", gw.URL, fakeKey); err != nil {
 					t.Fatal(err)
 				}
@@ -111,7 +133,7 @@ func TestDesktopRemoteReadsRejectLateResponses(t *testing.T) {
 				}))
 				defer gw.Close()
 				defer unblock()
-				a, _ := testDesktopApp(t, gw)
+				a := testClaudeReadApp(t, gw)
 				if err := a.env.Write("claude", gw.URL, fakeKey); err != nil {
 					t.Fatal(err)
 				}

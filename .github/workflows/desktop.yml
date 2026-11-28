@@ -125,9 +125,10 @@ jobs:
         run: go test ./...
       - name: Test shared runtime
         working-directory: client/runtime
-        # Retain per-test durations on each native runner. A single package
-        # time hid which Windows ARM cases consumed the release window.
-        run: go test -v -timeout 25m ./...
+        # Windows ARM runs the embedded PowerShell installer and restore tests natively.
+        env:
+          RUNTIME_TEST_TIMEOUT: ${{ matrix.os == 'windows-11-arm' && '35m' || '25m' }}
+        run: go test -v -timeout "$RUNTIME_TEST_TIMEOUT" ./...
       - name: End-to-end real engine smoke test
         run: pnpm smoke:engine
       - name: Build sidecar
